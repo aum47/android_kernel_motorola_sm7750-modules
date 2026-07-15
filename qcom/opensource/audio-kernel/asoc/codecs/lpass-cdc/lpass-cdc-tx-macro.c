@@ -158,6 +158,7 @@ struct lpass_cdc_tx_macro_priv {
 	bool swr_dmic_enable;
 	bool swr_dmic_gain_disable;
 	int wlock_holders;
+	u32 dec_unmute_delay_ms;
 };
 
 static int lpass_cdc_tx_macro_wake_enable(struct lpass_cdc_tx_macro_priv *tx_priv,
@@ -1373,7 +1374,7 @@ static int lpass_cdc_tx_mute_stream(struct snd_soc_dai *dai, int mute, int strea
 		tx_priv->tx_dec_unmute_work[dai->id].dai_id = dai->id;
 		queue_delayed_work(system_freezable_wq,
 			&tx_priv->tx_dec_unmute_work[dai->id].dwork,
-			msecs_to_jiffies(LPASS_CDC_TX_MACRO_DEC_UNMUTE_DELAY_MS));
+			msecs_to_jiffies(tx_priv->dec_unmute_delay_ms));
 	}
 	return 0;
 }
@@ -2259,6 +2260,18 @@ static int lpass_cdc_tx_macro_probe(struct platform_device *pdev)
 	tx_priv->swr_dmic_enable = false;
 	tx_priv->swr_dmic_gain_disable = false;
 	tx_priv->wlock_holders = 0;
+
+	ret = of_property_read_u32(pdev->dev.of_node,
+                              "qcom,dec-unmute-delay-ms",
+                              &tx_priv->dec_unmute_delay_ms);
+	if (ret == 0 && (tx_priv->dec_unmute_delay_ms >= 10 && tx_priv->dec_unmute_delay_ms <= 100)) {
+	    dev_info(&pdev->dev, "Unmute delay configure success\n");
+	} else {
+		dev_info(&pdev->dev, "Unmute delay configure fail\n");
+		tx_priv->dec_unmute_delay_ms = LPASS_CDC_TX_MACRO_DEC_UNMUTE_DELAY_MS; // 默认值
+	}
+	dev_info(&pdev->dev, "Unmute delay configured: %u ms\n",
+		tx_priv->dec_unmute_delay_ms);
 
 	for (i = 0; i < MIC_PAIR_MAX; i++)
 		tx_priv->dmic_clk_div[i] = LPASS_CDC_TX_MACRO_CLK_DIV_2;

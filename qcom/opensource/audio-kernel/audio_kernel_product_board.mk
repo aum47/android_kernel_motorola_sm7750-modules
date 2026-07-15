@@ -41,6 +41,12 @@ PRODUCT_PACKAGES += $(KERNEL_MODULES_OUT)/lpass_bt_swr_dlkm.ko
 PRODUCT_PACKAGES += $(KERNEL_MODULES_OUT)/wcd9378_slave_dlkm.ko \
 PRODUCT_PACKAGES += $(KERNEL_MODULES_OUT)/wcd9378_dlkm.ko \
 PRODUCT_PACKAGES += $(KERNEL_MODULES_OUT)/qmp_dlkm.ko
+ifneq (,$(filter leap% lhotse% roadstr% qogir%, $(TARGET_PRODUCT)))
+PRODUCT_PACKAGES += $(KERNEL_MODULES_OUT)/tfa98xx_dlkm.ko
+endif
+ifneq (,$(filter roadstr%, $(TARGET_PRODUCT)))
+PRODUCT_PACKAGES += $(KERNEL_MODULES_OUT)/aw882xx_dlkm.ko
+endif
 endif
 ifeq ($(call is-board-platform-in-list,bengal holi blair), true)
 PRODUCT_PACKAGES += $(KERNEL_MODULES_OUT)/bolero_cdc_dlkm.ko \

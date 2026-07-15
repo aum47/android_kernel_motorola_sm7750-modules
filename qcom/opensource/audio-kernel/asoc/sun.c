@@ -81,6 +81,7 @@ struct msm_asoc_mach_data {
 	struct device_node *dmic23_gpio_p; /* used by pinctrl API */
 	struct device_node *dmic45_gpio_p; /* used by pinctrl API */
 	struct device_node *dmic67_gpio_p; /* used by pinctrl API */
+	struct device_node *dmic_micbias_gpio_p; /* used by pinctrl API */
 	struct pinctrl *usbc_en2_gpio_p; /* used by pinctrl API */
 	bool is_afe_config_done;
 	struct device_node *fsa_handle;
@@ -94,8 +95,10 @@ struct msm_asoc_mach_data {
 	struct prm_earpa_hw_intf_config upd_config;
 	bool dedicated_wsa2; /* used to define how wsa2 slave devices are used */
 	int wcd_used;
+	int pm_eldo_dmic_gpio; /* pmic gpio to control dmic eldo */
 };
 
+static int dmic_micbias_cnt;
 static bool is_initial_boot;
 static bool codec_reg_done;
 static struct snd_soc_card snd_soc_card_sun_msm;
@@ -139,6 +142,46 @@ static struct wcd_mbhc_config wcd_mbhc_cfg = {
 	.anc_micbias = MIC_BIAS_2,
 	.enable_anc_mic_detect = false,
 	.moisture_duty_cycle_en = true,
+};
+
+static const char *const earpiece_dsense_text[] = {"On", "Off"};
+static SOC_ENUM_SINGLE_EXT_DECL(earpiece_dsense_en, earpiece_dsense_text);
+static int earpiece_dsense_en_gpio;
+static bool is_earpiece_dsense_disable;
+
+/* when gpio output is high, means earpiece dsense is off */
+static int earpiece_dsense_en_get(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = is_earpiece_dsense_disable;
+	pr_debug("get earpiece_dsense_pin state: %s\n",
+		 is_earpiece_dsense_disable ? "high" : "low");
+	return 0;
+}
+
+static int earpiece_dsense_en_put(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	switch (ucontrol->value.integer.value[0]) {
+	case 0:
+		gpio_direction_output(earpiece_dsense_en_gpio, 0);
+		is_earpiece_dsense_disable = 0;
+		break;
+	case 1:
+		gpio_direction_output(earpiece_dsense_en_gpio, 1);
+		is_earpiece_dsense_disable = 1;
+		break;
+	default:
+		return -EINVAL;
+	}
+	pr_debug("set earpiece_dsense_pin: %s\n",
+		 ucontrol->value.integer.value[0] ? "high" : "low");
+	return 0;
+}
+
+static const struct snd_kcontrol_new earpiece_dsense_en_controls[] = {
+	SOC_ENUM_EXT("Earpiece Dsense Enable", earpiece_dsense_en,
+			earpiece_dsense_en_get, earpiece_dsense_en_put),
 };
 
 static bool msm_usbc_swap_gnd_mic(struct snd_soc_component *component, bool active)
@@ -383,6 +426,25 @@ static int msm_dmic_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
+		if ((pdata->dmic_micbias_gpio_p) || (pdata->pm_eldo_dmic_gpio)) {
+			dmic_micbias_cnt++;
+			dev_dbg(component->dev, "%s: dmic_micbias_cnt %d\n", __func__, dmic_micbias_cnt);
+			if (dmic_micbias_cnt == 1) {
+				dev_info(component->dev, "%s: enable micbias\n", __func__);
+				if (pdata->pm_eldo_dmic_gpio){
+					dev_info(component->dev, "%s: enable pm eldo dmic\n", __func__);
+					gpio_direction_output(pdata->pm_eldo_dmic_gpio, 1);
+				} else {
+					ret = msm_cdc_pinctrl_select_active_state(
+							pdata->dmic_micbias_gpio_p);
+					if (ret < 0) {
+						pr_err_ratelimited("%s: micbias gpio set cannot be activated %sd",
+							__func__, "pdata->dmic_micbias_gpio_p");
+						return ret;
+					}
+				}
+			}
+		}
 		(*dmic_gpio_cnt)++;
 		if (*dmic_gpio_cnt == 1) {
 			ret = msm_cdc_pinctrl_select_active_state(
@@ -396,6 +458,25 @@ static int msm_dmic_event(struct snd_soc_dapm_widget *w,
 
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+		if ((pdata->dmic_micbias_gpio_p) || (pdata->pm_eldo_dmic_gpio)){
+			dmic_micbias_cnt--;
+			dev_dbg(component->dev, "%s: dmic_micbias_cnt %d\n", __func__, dmic_micbias_cnt);
+			if (dmic_micbias_cnt == 0) {
+				dev_info(component->dev, "%s: disable micbias\n", __func__);
+				if (pdata->pm_eldo_dmic_gpio){
+                                        dev_info(component->dev, "%s: disable pm eldo dmic\n", __func__);
+                                        gpio_direction_output(pdata->pm_eldo_dmic_gpio, 0);
+				} else {
+					ret = msm_cdc_pinctrl_select_sleep_state(
+							pdata->dmic_micbias_gpio_p);
+					if (ret < 0) {
+						pr_err_ratelimited("%s: micbias gpio set cannot be de-activated %sd",
+							__func__, "pdata->dmic_micbias_gpio_p");
+						return ret;
+					}
+				}
+			}
+		}
 		(*dmic_gpio_cnt)--;
 		if (*dmic_gpio_cnt == 0) {
 			ret = msm_cdc_pinctrl_select_sleep_state(
@@ -607,17 +688,6 @@ static struct snd_soc_dai_link msm_swr_haptics_be_dai_links[] = {
 		.ignore_suspend = 1,
 		.ops = &msm_common_be_ops,
 		SND_SOC_DAILINK_REG(rx_dma_rx6),
-	},
-	{
-		.name = LPASS_BE_WSA_CDC_DMA_RX_4,
-		.stream_name = LPASS_BE_WSA_CDC_DMA_RX_4,
-		.playback_only = 1,
-		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
-			SND_SOC_DPCM_TRIGGER_POST},
-		.ignore_pmdown_time = 1,
-		.ignore_suspend = 1,
-		.ops = &msm_common_be_ops,
-		SND_SOC_DAILINK_REG(wsa_dma_rx4),
 	},
 };
 
@@ -1137,6 +1207,29 @@ static struct snd_soc_dai_link msm_mi2s_dai_links[] = {
 		.ignore_suspend = 1,
 		SND_SOC_DAILINK_REG(tert_mi2s_tx),
 	},
+#if IS_ENABLED(CONFIG_SND_SOC_TFA98XX)
+	{
+		.name = LPASS_BE_QUAT_MI2S_RX,
+		.stream_name = LPASS_BE_QUAT_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(quat_mi2s_rx_tfa98xx),
+	},
+	{
+		.name = LPASS_BE_QUAT_MI2S_TX,
+		.stream_name = LPASS_BE_QUAT_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(quat_mi2s_tx_tfa98xx),
+	},
+#else
 	{
 		.name = LPASS_BE_QUAT_MI2S_RX,
 		.stream_name = LPASS_BE_QUAT_MI2S_RX,
@@ -1157,6 +1250,345 @@ static struct snd_soc_dai_link msm_mi2s_dai_links[] = {
 		.ops = &msm_common_be_ops,
 		.ignore_suspend = 1,
 		SND_SOC_DAILINK_REG(quat_mi2s_tx),
+	},
+#endif
+	{
+		.name = LPASS_BE_QUIN_MI2S_RX,
+		.stream_name = LPASS_BE_QUIN_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(quin_mi2s_rx),
+	},
+	{
+		.name = LPASS_BE_QUIN_MI2S_TX,
+		.stream_name = LPASS_BE_QUIN_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(quin_mi2s_tx),
+	},
+	{
+		.name = LPASS_BE_SEN_MI2S_RX,
+		.stream_name = LPASS_BE_SEN_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(sen_mi2s_rx),
+	},
+	{
+		.name = LPASS_BE_SEN_MI2S_TX,
+		.stream_name = LPASS_BE_SEN_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(sen_mi2s_tx),
+	},
+	{
+		.name = LPASS_BE_SEP_MI2S_RX,
+		.stream_name = LPASS_BE_SEP_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(sep_mi2s_rx),
+	},
+	{
+		.name = LPASS_BE_SEP_MI2S_TX,
+		.stream_name = LPASS_BE_SEP_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(sep_mi2s_tx),
+	},
+};
+
+/* mi2s for aw882xx pa at quat mi2s
+ * makesure it has same size as msm_mi2s_dai_links
+ */
+static struct snd_soc_dai_link msm_mi2s_aw882xx_dai_links[] = {
+        {
+                .name = LPASS_BE_PRI_MI2S_RX,
+                .stream_name = LPASS_BE_PRI_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(pri_mi2s_rx),
+        },
+        {
+                .name = LPASS_BE_PRI_MI2S_TX,
+                .stream_name = LPASS_BE_PRI_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(pri_mi2s_tx),
+        },
+        {
+                .name = LPASS_BE_SEC_MI2S_RX,
+                .stream_name = LPASS_BE_SEC_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(sec_mi2s_rx),
+        },
+        {
+                .name = LPASS_BE_SEC_MI2S_TX,
+                .stream_name = LPASS_BE_SEC_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(sec_mi2s_tx),
+        },
+        {
+                .name = LPASS_BE_TERT_MI2S_RX,
+                .stream_name = LPASS_BE_TERT_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(tert_mi2s_rx),
+        },
+        {
+                .name = LPASS_BE_TERT_MI2S_TX,
+                .stream_name = LPASS_BE_TERT_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(tert_mi2s_tx),
+        },
+#if 1
+        {
+                .name = LPASS_BE_QUAT_MI2S_RX,
+                .stream_name = LPASS_BE_QUAT_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(quat_mi2s_rx_aw882xx),
+        },
+        {
+                .name = LPASS_BE_QUAT_MI2S_TX,
+                .stream_name = LPASS_BE_QUAT_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(quat_mi2s_tx_aw882xx),
+        },
+#else
+        {
+                .name = LPASS_BE_QUAT_MI2S_RX,
+                .stream_name = LPASS_BE_QUAT_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(quat_mi2s_rx),
+        },
+        {
+                .name = LPASS_BE_QUAT_MI2S_TX,
+                .stream_name = LPASS_BE_QUAT_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(quat_mi2s_tx),
+        },
+#endif
+{
+                .name = LPASS_BE_QUIN_MI2S_RX,
+                .stream_name = LPASS_BE_QUIN_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(quin_mi2s_rx),
+        },
+        {
+                .name = LPASS_BE_QUIN_MI2S_TX,
+                .stream_name = LPASS_BE_QUIN_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(quin_mi2s_tx),
+        },
+        {
+                .name = LPASS_BE_SEN_MI2S_RX,
+                .stream_name = LPASS_BE_SEN_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(sen_mi2s_rx),
+        },
+        {
+                .name = LPASS_BE_SEN_MI2S_TX,
+                .stream_name = LPASS_BE_SEN_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(sen_mi2s_tx),
+        },
+        {
+                .name = LPASS_BE_SEP_MI2S_RX,
+                .stream_name = LPASS_BE_SEP_MI2S_RX,
+                .playback_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                .ignore_pmdown_time = 1,
+                SND_SOC_DAILINK_REG(sep_mi2s_rx),
+        },
+        {
+                .name = LPASS_BE_SEP_MI2S_TX,
+                .stream_name = LPASS_BE_SEP_MI2S_TX,
+                .capture_only = 1,
+                .trigger = {SND_SOC_DPCM_TRIGGER_POST,
+                        SND_SOC_DPCM_TRIGGER_POST},
+                .ops = &msm_common_be_ops,
+                .ignore_suspend = 1,
+                SND_SOC_DAILINK_REG(sep_mi2s_tx),
+        },
+};
+
+/*
+ * I2S interface pinctrl mapping
+ * ------------------------------------
+ * Primary	- pri_mi2s
+ * Secondary	- lpi_i2s3
+ * Tertiary	- tert_mi2s
+ * Quaternary	- quat_mi2s (lpi_i2s0)
+ * Quinary	- lpi_i2s1
+ * Senary	- lpi_i2s2
+ * ------------------------------------
+ */
+static struct snd_soc_dai_link msm_mi2s_aw8693x_tfa98xx_dai_links[] = {
+	{
+		.name = LPASS_BE_PRI_MI2S_RX,
+		.stream_name = LPASS_BE_PRI_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(pri_mi2s_rx_aw8693x),
+	},
+	{
+		.name = LPASS_BE_PRI_MI2S_TX,
+		.stream_name = LPASS_BE_PRI_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(pri_mi2s_tx),
+	},
+	{
+		.name = LPASS_BE_SEC_MI2S_RX,
+		.stream_name = LPASS_BE_SEC_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(sec_mi2s_rx),
+	},
+	{
+		.name = LPASS_BE_SEC_MI2S_TX,
+		.stream_name = LPASS_BE_SEC_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(sec_mi2s_tx),
+	},
+	{
+		.name = LPASS_BE_TERT_MI2S_RX,
+		.stream_name = LPASS_BE_TERT_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(tert_mi2s_rx),
+	},
+	{
+		.name = LPASS_BE_TERT_MI2S_TX,
+		.stream_name = LPASS_BE_TERT_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(tert_mi2s_tx),
+	},
+	{
+		.name = LPASS_BE_QUAT_MI2S_RX,
+		.stream_name = LPASS_BE_QUAT_MI2S_RX,
+		.playback_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(quat_mi2s_rx_tfa98xx),
+	},
+	{
+		.name = LPASS_BE_QUAT_MI2S_TX,
+		.stream_name = LPASS_BE_QUAT_MI2S_TX,
+		.capture_only = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.ops = &msm_common_be_ops,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(quat_mi2s_tx_tfa98xx),
 	},
 	{
 		.name = LPASS_BE_QUIN_MI2S_RX,
@@ -1682,9 +2114,30 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev, int w
 		rc = of_property_read_u32(dev->of_node,
 				"qcom,mi2s-audio-intf", &val);
 		if (!rc && val) {
-			memcpy(msm_sun_dai_links + total_links,
+			rc = of_property_read_u32(dev->of_node,
+                                "custom-mi2s-audio-intf", &val);
+			dev_info(dev,"%s:read custom-mi2s-audio-intf:rc=%d,val=%d",
+					__func__,rc,val);
+			if (!rc && (val == 1)) {
+				dev_info(dev,"%s: add msm_mi2s_aw882xx_dai_links",
+					__func__);
+				memcpy(msm_sun_dai_links + total_links,
+                                        msm_mi2s_aw882xx_dai_links,
+                                        sizeof(msm_mi2s_aw882xx_dai_links));
+			} else if (of_find_property(dev->of_node,
+					"haptic-i2s-supported", NULL))  {
+				dev_info(dev,"%s: add msm_mi2s_aw8693x_tfa98xx_dai_links",
+					__func__);
+				memcpy(msm_sun_dai_links + total_links,
+					msm_mi2s_aw8693x_tfa98xx_dai_links,
+					sizeof(msm_mi2s_aw8693x_tfa98xx_dai_links));
+			} else {
+				dev_info(dev,"%s: add tfa98xx dai_links",
+					__func__);
+				memcpy(msm_sun_dai_links + total_links,
 					msm_mi2s_dai_links,
 					sizeof(msm_mi2s_dai_links));
+			}
 			total_links += ARRAY_SIZE(msm_mi2s_dai_links);
 		}
 
@@ -2165,6 +2618,15 @@ static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime *rtd)
 	lpass_cdc_info_create_codec_entry(pdata->codec_root, lpass_cdc_component);
 	lpass_cdc_register_wake_irq(lpass_cdc_component, false);
 
+	if (gpio_is_valid(earpiece_dsense_en_gpio)) {
+		ret = snd_soc_add_component_controls(lpass_cdc_component, earpiece_dsense_en_controls,
+						 ARRAY_SIZE(earpiece_dsense_en_controls));
+		if (ret < 0) {
+			pr_err("%s: add earpiece desense controls failed: %d\n", __func__, ret);
+			return ret;
+		}
+	}
+
 	if (pdata->wcd_disabled)
 		goto done;
 
@@ -2449,6 +2911,26 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 		}
 	}
 
+	earpiece_dsense_en_gpio = of_get_named_gpio(pdev->dev.of_node,
+			"earpiece-dsense-enable", 0);
+	if (earpiece_dsense_en_gpio < 0) {
+		pr_err("missing earpiece_dsense_en gpio in dt node\n");
+	} else {
+		pr_info("earpiece_dsense_en_gpio = %d\n", earpiece_dsense_en_gpio);
+		if (gpio_is_valid(earpiece_dsense_en_gpio)) {
+			ret = devm_gpio_request_one(&(pdev->dev), earpiece_dsense_en_gpio,
+					GPIOF_OUT_INIT_HIGH, "earpiece_dsense_en");
+			if (ret) {
+				pr_err("earpiece_dsense_en_gpio, devm_gpio_request_one failed");
+			} else {
+				gpio_direction_output(earpiece_dsense_en_gpio, 1);
+				is_earpiece_dsense_disable = 1;
+			}
+		} else {
+			pr_err("Invalid earpiece_dsense_en gpio\n");
+		}
+	}
+
 	ret = msm_populate_dai_link_component_of_node(card);
 	if (ret) {
 		ret = -EPROBE_DEFER;
@@ -2500,6 +2982,9 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 	pdata->dmic67_gpio_p = of_parse_phandle(pdev->dev.of_node,
 					      "qcom,cdc-dmic67-gpios",
 					       0);
+	pdata->dmic_micbias_gpio_p = of_parse_phandle(pdev->dev.of_node,
+						  "qcom,dmic-micbias-en-gpio",
+						   0);
 	if (pdata->dmic01_gpio_p)
 		msm_cdc_pinctrl_set_wakeup_capable(pdata->dmic01_gpio_p, false);
 	if (pdata->dmic23_gpio_p)
@@ -2508,6 +2993,29 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 		msm_cdc_pinctrl_set_wakeup_capable(pdata->dmic45_gpio_p, false);
 	if (pdata->dmic67_gpio_p)
 		msm_cdc_pinctrl_set_wakeup_capable(pdata->dmic67_gpio_p, false);
+	if (pdata->dmic_micbias_gpio_p) {
+		pr_info("%s: micbias gpio set\n", __func__);
+		msm_cdc_pinctrl_set_wakeup_capable(pdata->dmic_micbias_gpio_p, false);
+	}
+
+	pdata->pm_eldo_dmic_gpio = of_get_named_gpio(pdev->dev.of_node,
+			                     "eldo_dmic_en_gpio",
+					     0);
+        if (pdata->pm_eldo_dmic_gpio < 0){
+		pr_err("%s: missing eldo_dmic_en_gpio in dt mode\n",__func__);
+	} else {
+		pr_info("pdata->pm_eldo_dmic_gpio = %d\n",pdata->pm_eldo_dmic_gpio);
+		if (gpio_is_valid(pdata->pm_eldo_dmic_gpio)){
+			ret = devm_gpio_request_one(&(pdev->dev), pdata->pm_eldo_dmic_gpio,
+					GPIOF_OUT_INIT_LOW,"ELDO_DMIC_GPIO");
+			if (ret) {
+				pr_err("ELDO_DMIC_GPIO, devm_gpio_request failed");
+			} else {
+				gpio_direction_output(pdata->pm_eldo_dmic_gpio, 0);
+			}
+		}
+		ret = 0;
+	}
 
 	msm_common_snd_init(pdev, card);
 

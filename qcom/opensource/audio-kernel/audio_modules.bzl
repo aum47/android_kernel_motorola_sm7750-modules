@@ -581,3 +581,33 @@ audio_modules.register(
     deps = [":%b_swr_dlkm",
 	],
 )
+
+# >>>> TFA98XX MODULES <<<<
+audio_modules.register(
+    name = "tfa98xx_dlkm",
+    path = ASOC_CODECS_PATH + "/tfa98xx",
+    config_option = "CONFIG_SND_SOC_TFA98XX",
+    srcs = [
+        "src/tfa98xx.c",
+        "src/tfa_container.c",
+        "src/tfa_dsp.c",
+        "src/tfa_init.c",
+    ],
+)
+
+# >>>> AW882XX MODULES <<<<
+audio_modules.register(
+    name = "aw882xx_dlkm",
+    path = ASOC_CODECS_PATH + "/aw882xx",
+    config_option = "CONFIG_SND_SOC_AW882XX",
+    srcs = [
+        "aw882xx.c",
+        "aw882xx_bin_parse.c",
+        "aw882xx_calib.c",
+        "aw882xx_device.c",
+        "aw882xx_dsp.c",
+        "aw882xx_init.c",
+        "aw882xx_monitor.c",
+        "aw882xx_spin.c",
+    ],
+)
