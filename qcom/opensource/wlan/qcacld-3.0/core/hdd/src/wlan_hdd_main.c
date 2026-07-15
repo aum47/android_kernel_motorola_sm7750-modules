@@ -347,6 +347,17 @@ static int enable_11d = -1;
 static int enable_dfs_chan_scan = -1;
 static bool is_mode_change_psoc_idle_shutdown;
 
+#define BUF_LEN_SAR 10
+static char  sar_sta_buffer[BUF_LEN_SAR];
+static struct kparam_string sar_sta = {
+	.string = sar_sta_buffer,
+	.maxlen = BUF_LEN_SAR,
+};
+static char  sar_mhs_buffer[BUF_LEN_SAR];
+static struct kparam_string sar_mhs = {
+	.string = sar_mhs_buffer,
+	.maxlen = BUF_LEN_SAR,
+};
 #define WLAN_NLINK_CESIUM 30
 
 static qdf_wake_lock_t wlan_wake_lock;
@@ -15854,6 +15865,69 @@ static inline QDF_STATUS hdd_cfg_parse_connection_roaming_cfg(void)
 }
 #endif
 
+/*Begin Add moto PRC special ini overlay*/
+#define MOTO_STRING_LEN 32
+static char *bootargs_str;
+static char radio_ptr[MOTO_STRING_LEN] = {0};
+
+static int wlan_get_bootarg_dt(char *key, char **value, char *prop, char *spl_flag)
+{
+	const char *bootargs_tmp = NULL;
+	char *idx = NULL;
+	char *kvpair = NULL;
+	int err = 1;
+	struct device_node *n = of_find_node_by_path("/chosen");
+	size_t bootargs_tmp_len = 0;
+
+	if (n == NULL)
+		goto err;
+
+	if (of_property_read_string(n, prop, &bootargs_tmp) != 0)
+		goto putnode;
+
+	bootargs_tmp_len = strlen(bootargs_tmp);
+	if (!bootargs_str) {
+		/* The following operations need a non-const
+		 * version of bootargs
+		*/
+		bootargs_str = kzalloc(bootargs_tmp_len + 1, GFP_KERNEL);
+		if (!bootargs_str)
+			goto putnode;
+	}
+	strlcpy(bootargs_str, bootargs_tmp, bootargs_tmp_len + 1);
+
+	idx = strnstr(bootargs_str, key, strlen(bootargs_str));
+	if (idx) {
+		kvpair = strsep(&idx, " ");
+		if (kvpair)
+			if (strsep(&kvpair, "=")) {
+				*value = strsep(&kvpair, spl_flag);
+				if (*value)
+					err = 0;
+			}
+	}
+
+putnode:
+	of_node_put(n);
+err:
+	return err;
+}
+
+static int get_moto_radio(void)
+{
+	char *radiodevice = NULL;
+	int rc = 0;
+	rc = wlan_get_bootarg_dt("androidboot.radio=", &radiodevice, "mmi,bootconfig", "\n");
+	if (rc || !radiodevice){
+		hdd_err("radio string is error");
+		return -ENOMEM;
+	}else{
+		strlcpy(radio_ptr, radiodevice, MOTO_STRING_LEN);
+		return 0;
+	}
+}
+/*End Add moto PRC special ini overlay*/
+
 struct hdd_context *hdd_context_create(struct device *dev)
 {
 	QDF_STATUS status;
@@ -15896,6 +15970,21 @@ struct hdd_context *hdd_context_create(struct device *dev)
 		ret = qdf_status_to_os_return(status);
 		goto err_free_config;
 	}
+
+	/*Begin,IKSWU-42693,hurui1,Add moto PRC special ini overlay*/
+	if(get_moto_radio() != 0) {
+		hdd_err("radio not present");
+	} else {
+		hdd_debug("radio %s",radio_ptr);
+		if (strcmp(radio_ptr, "PRC") == 0) {
+			status = cfg_parse(WLAN_PRC_INI_FILE);
+			if (QDF_IS_STATUS_ERROR(status)) {
+				hdd_err("Failed to parse cfg %s, skip!",
+				WLAN_PRC_INI_FILE);
+			}
+		}
+	}
+	/*End,hurui1,IKSWU-42693*/
 
 	status = hdd_cfg_parse_connection_roaming_cfg();
 
@@ -17117,9 +17206,21 @@ static int hdd_initialize_mac_address(struct hdd_context *hdd_ctx)
 
 	status = hdd_update_mac_config(hdd_ctx);
 	if (QDF_IS_STATUS_SUCCESS(status)) {
+#ifdef MOTO_UTAGS_MAC
+		hdd_info("using MAC address from UTAG");
+#else
 		hdd_info("using MAC address from wlan_mac.bin");
+#endif
 		return 0;
 	}
+
+#ifdef MOTO_UTAGS_MAC
+	hdd_warn("Can't update mac config via wlan_mac.bin, using MAC from serial number");
+
+	status = hdd_update_mac_serial(hdd_ctx);
+	if (QDF_IS_STATUS_SUCCESS(status))
+		return 0;
+#endif
 
 	hdd_info("using default MAC address");
 
@@ -21658,6 +21759,11 @@ exit:
 	return errno;
 }
 
+static int sar_changed_handler(const char *kmessage,
+                                const struct kernel_param *kp)
+{
+        return param_set_copystring(kmessage, kp);
+}
 static int hdd_set_con_mode(enum QDF_GLOBAL_MODE mode)
 {
 	con_mode = mode;
@@ -23780,6 +23886,11 @@ static const struct kernel_param_ops pcie_gen_speed_ops = {
 	.get = param_get_int,
 };
 
+static const struct kernel_param_ops sar_ops = {
+	.set = sar_changed_handler,
+	.get = param_get_string,
+};
+
 module_param_cb(con_mode, &con_mode_ops, &con_mode,
 		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
@@ -23796,6 +23907,11 @@ module_param_cb(con_mode_epping, &con_mode_epping_ops,
 
 module_param_cb(fwpath, &fwpath_ops, &fwpath,
 		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+module_param_cb(sar_sta, &sar_ops, &sar_sta,
+		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+module_param_cb(sar_mhs, &sar_ops, &sar_mhs,
+		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
 
 module_param(enable_dfs_chan_scan, int, S_IRUSR | S_IRGRP | S_IROTH);
 
