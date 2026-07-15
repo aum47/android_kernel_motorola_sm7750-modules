@@ -31,6 +31,9 @@
 #include <drm/drm_atomic_uapi.h>
 #include <drm/drm_probe_helper.h>
 #include <linux/version.h>
+#include <linux/memblock.h>
+#include <linux/string.h>
+#include <linux/slab.h>
 
 #include "msm_drv.h"
 #include "msm_mmu.h"
@@ -72,6 +75,8 @@
 #ifdef CONFIG_DRM_SDE_VM
 #include <linux/gunyah/gh_irq_lend.h>
 #endif
+
+#include "sde_motUtil.h"
 
 #define CREATE_TRACE_POINTS
 #include "sde_trace.h"
@@ -182,6 +187,7 @@ static int _sde_debugfs_init(struct sde_kms *sde_kms)
 
 	(void) sde_debugfs_vbif_init(sde_kms, debugfs_root);
 	(void) sde_debugfs_core_irq_init(sde_kms, debugfs_root);
+	(void) sde_debugfs_mot_util_init(sde_kms, debugfs_root);
 
 	rc = sde_core_perf_debugfs_init(&sde_kms->perf, debugfs_root);
 	if (rc) {
@@ -1125,6 +1131,9 @@ static void _sde_kms_drm_check_dpms(struct drm_atomic_state *old_state,
 			notification.notif_data.old_fps = old_fps;
 			notification.notif_data.new_fps = new_fps;
 			notification.notif_data.early_trigger = is_pre_commit;
+			if (new_mode != DRM_PANEL_EVENT_FPS_CHANGE)
+				pr_info("%s, panel_type:%d, notif_type:%d, early_trigger:%d", __func__,
+						panel_type, new_mode, is_pre_commit);
 			panel_event_notification_trigger(panel_type,
 					&notification);
 		}
@@ -2160,7 +2169,10 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.post_kickoff = dsi_conn_post_kickoff,
 		.check_status = dsi_display_check_status,
 		.enable_event = dsi_conn_enable_event,
+		.motUtil_transfer = dsi_display_motUtil_transfer,
 		.cmd_transfer = dsi_display_cmd_transfer,
+		.force_esd_disable = dsi_display_force_esd_disable,
+		.set_param = dsi_display_set_param,
 		.cont_splash_config = dsi_display_cont_splash_config,
 		.cont_splash_res_disable = dsi_display_cont_splash_res_disable,
 		.get_panel_vfp = dsi_display_get_panel_vfp,
@@ -2193,6 +2205,8 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.get_dst_format = NULL,
 		.check_status = NULL,
 		.cmd_transfer = NULL,
+		.force_esd_disable = NULL,
+		.set_param = NULL,
 		.cont_splash_config = NULL,
 		.cont_splash_res_disable = NULL,
 		.get_panel_vfp = NULL,
@@ -2216,6 +2230,8 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 		.set_colorspace = dp_connector_set_colorspace,
 		.config_hdr = dp_connector_config_hdr,
 		.cmd_transfer = NULL,
+		.force_esd_disable = NULL,
+		.set_param = NULL,
 		.cont_splash_config = NULL,
 		.cont_splash_res_disable = NULL,
 		.get_panel_vfp = NULL,
@@ -4320,6 +4336,102 @@ static bool sde_kms_in_trusted_vm(const struct msm_kms *kms)
 	return sde_in_trusted_vm(sde_kms);
 }
 
+static int sde_kms_set_panel_feature(const struct msm_kms *kms,
+		struct panel_param_info param_info)
+{
+	struct sde_kms *sde_kms;
+	struct dsi_display *display;
+	struct msm_param_info param_info_msm;
+	int rc = 0;
+	int i = 0;
+
+	if (!kms) {
+		SDE_ERROR("invalid input args\n");
+		return -EINVAL;
+	}
+
+	sde_kms = to_sde_kms(kms);
+	param_info_msm.param_idx = (enum msm_param_id)param_info.param_idx;
+	param_info_msm.value = param_info.value;
+	for (i = 0; i < sde_kms->dsi_display_count; i++){
+		display = (struct dsi_display *)sde_kms->dsi_displays[i];
+		if(!display->panel->panel_send_cmd) {
+			continue;
+		}
+		rc = dsi_display_set_param(display, &param_info_msm);
+		if (rc){
+			SDE_ERROR("dsi_displays[%d] set param %d value %d failed\n",
+				i,param_info_msm.param_idx, param_info_msm.value);}
+		else{
+			SDE_INFO("dsi_displays[%d] set param %d value %d success\n",
+				i,param_info_msm.param_idx, param_info_msm.value);}
+	}
+
+	return rc;
+}
+
+static int sde_kms_set_partition_refreshrate(const struct msm_kms *kms,
+		struct sde_partition_refreshrate prr_info)
+{
+	struct sde_kms *sde_kms;
+	struct dsi_display *display;
+	int rc = 0;
+	int i = 0;
+
+	if (!kms) {
+		SDE_ERROR("invalid input args\n");
+		return -EINVAL;
+	}
+
+	sde_kms = to_sde_kms(kms);
+	for (i = 0; i < sde_kms->dsi_display_count; i++) {
+		display = (struct dsi_display *)sde_kms->dsi_displays[i];
+		if(!display->panel->panel_send_cmd) {
+			continue;
+		}
+		rc = dsi_display_set_partition_refreshrate(display, &prr_info);
+		if (rc) {
+			SDE_ERROR("dsi_displays[%d] set partition refreshrate [%d  %d  %d  %d  %d] failed\n",
+				i, prr_info.refreshrate1st, prr_info.boundaryLine1st, prr_info.refreshrate2nd, prr_info.boundaryLine2nd, prr_info.refreshrate3rd);
+		} else {
+			SDE_INFO("dsi_displays[%d]  set partition refreshrate [%d  %d  %d  %d  %d] success\n",
+				i, prr_info.refreshrate1st, prr_info.boundaryLine1st, prr_info.refreshrate2nd, prr_info.boundaryLine2nd, prr_info.refreshrate3rd);
+		}
+	}
+
+	return rc;
+}
+
+static int sde_kms_set_moto_drm_command(const struct msm_kms *kms,
+		struct sde_moto_drm_command mot_cmd)
+{
+	struct sde_kms *sde_kms;
+	struct dsi_display *display;
+	int rc = 0;
+	int i = 0;
+
+	if (!kms) {
+		SDE_ERROR("invalid input args\n");
+		return -EINVAL;
+	}
+
+	sde_kms = to_sde_kms(kms);
+	for (i = 0; i < sde_kms->dsi_display_count; i++) {
+		display = (struct dsi_display *)sde_kms->dsi_displays[i];
+		if(!display->panel->panel_send_cmd) {
+			continue;
+		}
+		rc = dsi_display_set_moto_drm_command(display, &mot_cmd);
+		if (rc) {
+			SDE_ERROR("dsi_displays[%d] set mot drm command [%d  %d] failed\n", i, mot_cmd.id, mot_cmd.val);
+		} else {
+			SDE_INFO("dsi_displays[%d]  set mot drm command [%d  %d] success\n", i, mot_cmd.id, mot_cmd.val);
+		}
+	}
+
+	return rc;
+}
+
 static int _sde_kms_null_commit(struct drm_device *dev,
 		struct drm_encoder *enc)
 {
@@ -4809,6 +4921,9 @@ static const struct msm_kms_funcs kms_funcs = {
 	.get_dsc_count = sde_kms_get_dsc_count,
 	.in_trusted_vm = sde_kms_in_trusted_vm,
 	.in_loopback_mode = sde_kms_in_loopback_mode,
+	.set_panel_feature = sde_kms_set_panel_feature,
+	.set_partition_refreshrate = sde_kms_set_partition_refreshrate,
+	.set_moto_drm_command  = sde_kms_set_moto_drm_command,
 };
 
 static int _sde_kms_mmu_destroy(struct sde_kms *sde_kms)

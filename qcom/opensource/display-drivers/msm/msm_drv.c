@@ -53,6 +53,7 @@
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
 #include <drm/drm_irq.h>
 #endif
+#include <linux/reboot.h>
 
 #include "msm_drv.h"
 #include "msm_gem.h"
@@ -514,6 +515,11 @@ static int msm_drm_uninit(struct device *dev)
 		priv->registered = false;
 	}
 
+	if (priv->msm_drv_notifier.notifier_call) {
+		unregister_reboot_notifier(&priv->msm_drv_notifier);
+		priv->msm_drv_notifier.notifier_call = NULL;
+	}
+
 #if IS_ENABLED(CONFIG_DRM_FBDEV_EMULATION)
 	if (fbdev && priv->fbdev)
 		msm_fbdev_free(ddev);
@@ -832,6 +838,23 @@ static struct msm_kms *_msm_drm_component_init_helper(
 	return kms;
 }
 
+static void msm_pdev_shutdown(struct platform_device *pdev);
+static int msm_drv_shutdown_notifier_cb(struct notifier_block *nb,
+					unsigned long event, void *unused)
+{
+	struct device *dev;
+	struct platform_device *pdev;
+	struct msm_drm_private *priv = container_of(nb, struct msm_drm_private,
+					msm_drv_notifier);
+
+	dev = priv->dev->dev;
+	pdev = to_platform_device(dev);
+	dev_warn(dev, "prepare to shutdown\n");
+	msm_pdev_shutdown(pdev);
+
+	return NOTIFY_DONE;
+}
+
 static int msm_drm_device_init(struct platform_device *pdev,
 		struct drm_driver *drv)
 {
@@ -1041,6 +1064,16 @@ static int msm_drm_component_init(struct device *dev)
 	}
 
 	drm_kms_helper_poll_init(ddev);
+
+	priv->msm_drv_notifier.notifier_call = msm_drv_shutdown_notifier_cb;
+	priv->msm_drv_notifier.next = NULL;
+	priv->msm_drv_notifier.priority = 1;
+	ret = register_reboot_notifier(&priv->msm_drv_notifier);
+	if (ret) {
+		dev_err(dev, "Failed to register for reboot_notifier. ret = %d\n",
+					ret);
+		goto fail;
+	}
 
 	return 0;
 
@@ -1845,6 +1878,101 @@ int msm_ioctl_display_hint_ops(struct drm_device *dev, void *data,
 	return 0;
 }
 
+static int msm_ioctl_set_panel_feature(struct drm_device *dev, void *data,
+		struct drm_file *file_priv)
+{
+	struct msm_drm_private *priv;
+	struct msm_kms *kms;
+	struct panel_param_info *param_info = data;
+	int ret;
+
+	priv = dev->dev_private;
+	kms = priv->kms;
+
+	if (unlikely(!param_info)) {
+		DRM_ERROR("ioctl_set_panel_feature invalid data\n");
+		return -EINVAL;
+	}
+
+	DRM_INFO("ioctl_set_panel_feature idx=%d, value=%d\n",
+		param_info->param_idx, param_info->value);
+
+	if (kms && kms->funcs && kms->funcs->set_panel_feature) {
+		ret = kms->funcs->set_panel_feature(kms, *param_info);
+		if (ret) {
+			DRM_ERROR("kms set_panel_feature failed.\n");
+			goto fail;
+		}
+	}
+
+	return 0;
+fail:
+	return ret;
+}
+
+static int msm_ioctl_set_partition_refreshrate(struct drm_device *dev, void *data,
+		struct drm_file *file_priv)
+{
+	struct msm_drm_private *priv;
+	struct msm_kms *kms;
+	struct sde_partition_refreshrate *prr_info = data;
+	int ret;
+
+	priv = dev->dev_private;
+	kms = priv->kms;
+
+	if (unlikely(!prr_info)) {
+		DRM_ERROR("ioctl_partition_refreshrate invalid data\n");
+		return -EINVAL;
+	}
+
+	DRM_INFO("ioctl_set_partition_refreshrate [%d  %d  %d  %d  %d]\n",
+		prr_info->refreshrate1st, prr_info->boundaryLine1st, prr_info->refreshrate2nd, prr_info->boundaryLine2nd, prr_info->refreshrate3rd);
+
+	if (kms && kms->funcs && kms->funcs->set_partition_refreshrate) {
+		ret = kms->funcs->set_partition_refreshrate(kms, *prr_info);
+		if (ret) {
+			DRM_ERROR("kms set_partition_refreshrate failed.\n");
+			goto fail;
+		}
+	}
+
+	return 0;
+fail:
+	return ret;
+}
+
+static int msm_ioctl_set_moto_drm_command(struct drm_device *dev, void *data,
+		struct drm_file *file_priv)
+{
+	struct msm_drm_private *priv;
+	struct msm_kms *kms;
+	struct sde_moto_drm_command *mot_cmd = data;
+	int ret;
+
+	priv = dev->dev_private;
+	kms = priv->kms;
+
+	if (unlikely(!mot_cmd)) {
+		DRM_ERROR("msm_ioctl_set_moto_drm_command invalid data\n");
+		return -EINVAL;
+	}
+
+	DRM_INFO("ioctl_set_moto_drm_command %d  %d\n", mot_cmd->id, mot_cmd->val);
+
+	if (kms && kms->funcs && kms->funcs->set_moto_drm_command) {
+		ret = kms->funcs->set_moto_drm_command(kms, *mot_cmd);
+		if (ret) {
+			DRM_ERROR("kms set_moto_drm_command failed.\n");
+			goto fail;
+		}
+	}
+
+	return 0;
+fail:
+	return ret;
+}
+
 /**
  * msm_ioctl_display_early_ept - early wakeup display.
  * @dev: drm device for the ioctl
@@ -1894,6 +2022,12 @@ static const struct drm_ioctl_desc msm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(MSM_DISPLAY_HINT, msm_ioctl_display_hint_ops,
 			DRM_UNLOCKED),
 	DRM_IOCTL_DEF_DRV(MSM_EARLY_EPT, msm_ioctl_display_early_ept,
+			DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(SET_PANEL_FEATURE, msm_ioctl_set_panel_feature,
+			DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(SET_PARTITION_REFRESHRATE, msm_ioctl_set_partition_refreshrate,
+			DRM_UNLOCKED),
+	DRM_IOCTL_DEF_DRV(SET_MOTO_DRM_COMMAND, msm_ioctl_set_moto_drm_command,
 			DRM_UNLOCKED),
 };
 

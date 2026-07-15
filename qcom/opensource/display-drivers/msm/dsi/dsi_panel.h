@@ -42,6 +42,44 @@
 #define MIPI_DSI_MSG_BATCH_COMMAND BIT(6)
 #define MIPI_DSI_MSG_UNICAST_COMMAND BIT(7)
 
+#define DSI_PANEL_MAX_PANEL_LEN        128
+#define MAX_PARAM_NAME 10
+
+#define BRIGHTNESS_HBM_ON	0xFFFFFFFE
+#define BRIGHTNESS_HBM_OFF	(BRIGHTNESS_HBM_ON - 1)
+#define HBM_BRIGHTNESS(value) ((value) == HBM_OFF_STATE ?\
+			BRIGHTNESS_HBM_OFF : BRIGHTNESS_HBM_ON)
+
+#define MAX_BL_CMDS_COUNT	5
+#define PCD_REG_MAX_PASS_COUNT			5
+#define PCD_REG_SEQ_INTERVAL_DEFAULT		20
+#define PCD_REG_CHECK_INTERVAL_IN_MINUTES	720		//12 hours
+#define PCD_REG_CHECK_RETRY_MAX		3
+
+/* HBM implementation is different, depending on display and backlight hardware
+ * design, which is classified into the following types:
+ * HBM_TYPE_OLED: OLED panel, HBM is controlled by DSI register only, which
+ *     is independent on brightness.
+ * HBM_TYPE_LCD_DCS_WLED: LCD panel, HBM is controlled by DSI register, and
+ *     brightness is decided by WLED IC on I2C/SPI bus.
+ * HBM_TYPE_LCD_DCS_ONLY: LCD panel, brightness/HBM is controlled by DSI
+ *     register only.
+ * HBM_TYPE_LCD_WLED_ONLY: LCD panel, brightness/HBM is controlled by WLED
+ *     IC only.
+ * HBM_TYPE_LCD_DCS_GPIO: LCD panel, HBM  is controlled by GPIO, and brightness
+ *     is controlled by DSI register.
+ *
+ * Note: brightness must be at maximum while enabling HBM for all LCD panels
+ */
+
+enum panel_hbm_type {
+	HBM_TYPE_OLED = 0,
+	HBM_TYPE_LCD_DCS_WLED,
+	HBM_TYPE_LCD_DCS_ONLY,
+	HBM_TYPE_LCD_WLED_ONLY,
+	HBM_TYPE_LCD_DCS_GPIO
+};
+
 enum dsi_panel_rotation {
 	DSI_PANEL_ROTATE_NONE = 0,
 	DSI_PANEL_ROTATE_HV_FLIP,
@@ -53,6 +91,7 @@ enum dsi_backlight_type {
 	DSI_BACKLIGHT_PWM = 0,
 	DSI_BACKLIGHT_WLED,
 	DSI_BACKLIGHT_DCS,
+	DSI_BACKLIGHT_DUMMY,
 	DSI_BACKLIGHT_EXTERNAL,
 	DSI_BACKLIGHT_UNKNOWN,
 	DSI_BACKLIGHT_MAX,
@@ -89,6 +128,10 @@ struct dsi_dfps_capabilities {
 	u32 *dfps_list;
 	u32 dfps_list_len;
 	bool dfps_support;
+	bool dfps_send_cmd_support;
+	bool dfps_send_cmd_with_te_async;
+	u32 panel_on_fps;
+	u32 current_fps;
 };
 
 struct dsi_qsync_capabilities {
@@ -137,11 +180,13 @@ struct dsi_backlight_config {
 	enum dsi_backlight_type type;
 	enum bl_update_flag bl_update;
 
+	bool bl_2bytes_enable;
 	u32 bl_min_level;
 	u32 bl_max_level;
 	u32 brightness_max_level;
 	/* current brightness value */
 	u32 brightness;
+	u32 brightness_default_level;
 	u32 bl_level;
 	u32 bl_scale;
 	u32 bl_scale_sv;
@@ -165,6 +210,12 @@ struct dsi_backlight_config {
 
 	/* DCS params */
 	bool lp_mode;
+
+	/* Use exponent backlight curve */
+	bool bl_is_exponent;
+	u32 brightness_updated;
+	bool bl_double_write;
+	u32 aod_bl_level;
 };
 
 struct dsi_reset_seq {
@@ -180,10 +231,14 @@ struct dsi_panel_reset_config {
 	int disp_en_gpio;
 	int lcd_mode_sel_gpio;
 	u32 mode_sel_state;
+	int vio_en_gpio;
+	int vci_en_gpio;
+	int vdd_en_gpio;
 };
 
 enum esd_check_status_mode {
 	ESD_MODE_REG_READ,
+	ESD_MODE_TE_CHK_REG_RD,
 	ESD_MODE_SW_BTA,
 	ESD_MODE_PANEL_TE,
 	ESD_MODE_SW_SIM_SUCCESS,
@@ -204,10 +259,158 @@ struct drm_panel_esd_config {
 	u32 groups;
 };
 
+struct drm_panel_cellid_config {
+	bool cellid_enabled;
+	struct dsi_panel_cmd_set cellid_cmd;
+	u32 cellid_rlen;
+	u32 cellid_offset;
+	u8 *return_buf;
+};
+
+struct drm_panel_pcd_config {
+	bool pcd_reg_enabled;
+	bool pcd_reg_checkable;
+	bool pcd_reg_read_flag;
+	bool check_before_read;
+	struct dsi_panel_cmd_set pcd_reg_cmd;
+	u32 pcd_reg_rlen;
+	u32 pcd_reg_offset;
+	u32 pcd_reg_mask;
+	u8 *return_buf;
+	u8 pcd_reg_status;
+	u8 retry_count;
+	u32 pcd_reg_val;
+	u32 pcd_reg_pass_array[PCD_REG_MAX_PASS_COUNT];
+	u32 pcd_reg_pass_array_size;
+	u32 pcd_reg_pass_min;
+	u32 pcd_reg_pass_max;
+	u32 pcd_reg_read_delay_ms;
+	u32 check_seq_count;	//screen on count
+	u32 check_seq_interval;
+	u32 check_interval_in_mins;
+	u64 check_last_timestamp;
+};
+
 struct dsi_panel_spr_info {
 	bool enable;
 	enum msm_display_spr_pack_type pack_type;
 	enum msm_display_spr_pack_type_mode pack_type_mode;
+
+};
+
+struct dsi_panel_lhbm_config {
+	bool enable;
+	bool lhbm_bl_cmds_enable;
+	u32 lhbm_bl_cmds_line_diff;
+	u32 lhbm_bl_cmds_count;
+	u32 lhbm_bl_cmds_len;
+	u32 *lhbm_bl_cmds_bl[MAX_BL_CMDS_COUNT];
+	u32 lhbm_bl_thresholds[MAX_BL_CMDS_COUNT-1];
+	u32 dc_hybird_threshold;
+	u32 dbv_level;
+	u32 alpha_reg;
+	u32 alpha_size;
+	bool alpha_same_high_level;
+	u32 *alpha;
+	bool lhbm_wait_for_fps_valid;
+	u32 lhbm_wait_for_fps_count;
+	u32 lhbm_wait_for_fps_interval;
+	u32 *lhbm_not_allowed_fps_list;
+	u32 lhbm_not_allowed_fps_list_len;
+	u32 	bl_num;
+};
+
+struct dsi_panel_PartitionRefreshrate_config {
+	bool enable;
+	u32 slice_h;
+	u32 min_boundaryLine;
+	u32 max_boundaryLine;
+	u32 boundaryLine_reg_count;
+};
+
+struct dsi_panel_apl_config {
+	bool enable;
+	u32 apl_threshold;
+	struct dsi_panel_cmd_set apl_cmd_on;
+	struct dsi_panel_cmd_set apl_cmd_off;
+	bool apl_state;
+	bool apl_bl_update;
+	bool apl_bl_set;
+	u32 apl_reg;
+	u32 apl_bl_pos;
+	int apl_funcid;
+	int dobly_enable;
+};
+
+struct dsi_panel_aod_config {
+	bool enable;
+	u32 aod_backlight_threshold;
+	bool bl_cmd_update;
+	bool bl_vid_update;
+	bool bl_vid_cmd_switch2;
+	u32 min_nit;
+	u32 hig_nit;
+	u32 min_bl_reg;
+	u32 mid_bl_reg;
+	u32 hig_bl_reg;
+	u32 cmd_out_post_ms;
+	bool aod_powerup;
+	bool cmd_resend;
+};
+
+enum panel_idx {
+	MAIN_IDX = 0,
+	SEC_INX,
+	PANEL_IDX_MAX,
+};
+
+enum acl_state {
+	ACL_OFF_STATE = 0,
+	ACL_ON_STATE,
+	ACL_STATE_NUM,
+};
+
+enum hbm_state {
+	HBM_OFF_STATE = 0,
+	HBM_ON_STATE,
+	HBM_FOD_ON_STATE,
+	HBM_STATE_NUM
+};
+
+enum cabc_state {
+	CABC_UI_STATE,
+	CABC_MV_STATE,
+	CABC_DIS_STATE,
+	CABC_STATE_NUM,
+};
+
+enum dc_state {
+	DC_OFF_STATE = 0,
+	DC_ON_STATE,
+	DC_STATE_NUM,
+};
+
+enum color_state {
+	COLOR_VBT_STATE = 0,
+	COLOR_STD_STATE,
+	COLOR_GAME_STATE,
+	COLOR_NONE_STATE,
+	COLOR_STATE_NUM,
+};
+
+struct panel_param_val_map {
+	int state;
+	enum dsi_cmd_set_type type;
+	struct dsi_panel_cmd_set *cmds;
+};
+
+struct panel_param {
+	const char *param_name;
+	struct panel_param_val_map *val_map;
+	u16 val_max;
+	const u16 default_value;
+	u16 value;
+	bool is_supported;
 };
 
 struct dsi_panel;
@@ -222,6 +425,10 @@ struct dsi_panel_ops {
 	int (*parse_gpios)(struct dsi_panel *panel);
 	int (*parse_power_cfg)(struct dsi_panel *panel);
 	int (*trigger_esd_attack)(struct dsi_panel *panel);
+};
+enum touch_state {
+	TOUCH_DEEP_SLEEP_STATE = 0,
+	TOUCH_LOW_POWER_STATE,
 };
 
 struct dsi_panel {
@@ -259,6 +466,16 @@ struct dsi_panel {
 	struct drm_panel_hdr_properties hdr_props;
 	struct drm_panel_esd_config esd_config;
 
+	struct dsi_panel_lhbm_config lhbm_config;
+
+	struct drm_panel_cellid_config cellid_config;
+
+	struct dsi_panel_apl_config apl_config;
+
+	struct dsi_panel_PartitionRefreshrate_config prr_config;
+
+	struct dsi_panel_aod_config aod_config;
+
 	struct dsi_parser_utils utils;
 
 	bool lp11_init;
@@ -266,6 +483,7 @@ struct dsi_panel {
 	bool ulps_suspend_enabled;
 	bool allow_phy_power_off;
 	bool reset_gpio_always_on;
+	bool need_execute_shutdown;
 	atomic_t esd_recovery_pending;
 
 	bool skip_panel_off;
@@ -296,7 +514,45 @@ struct dsi_panel {
 	enum dsi_panel_physical_type panel_type;
 
 	struct dsi_panel_ops panel_ops;
+	bool esd_utag_enable;
+	u64 panel_id;
+	u64 panel_ver;
+	u32 panel_regDA;
+	char panel_name[DSI_PANEL_MAX_PANEL_LEN];
+	char panel_supplier[DSI_PANEL_MAX_PANEL_LEN];
+
+	u32 disp_on_chk_val;
+	bool no_panel_on_read_support;
+
+	bool panel_hbm_fod;
+	bool panel_hbm_dim_off;
+
+	enum panel_hbm_type hbm_type;
+	u32  bl_lvl_during_hbm;
+
+	struct panel_param *param_cmds;
+
+	enum touch_state tp_state;
+	bool tp_state_check_enable;
+
+	int panel_recovery_retry;
+	bool is_panel_dead;
+       int paramVersion;
+	bool mot_nt37705A_read_cellid;
+	int dc_state;
+	int panel_power_cnt;
+	struct msm_param_info curDCModeParaInfo;
+	bool panel_send_cmd;
+	bool esd_first_check;
+	bool check_pcd;
+	int panelPcdCheck_enable;
+	struct drm_panel_pcd_config pcd_config;
+	struct sde_partition_refreshrate cur_partition_refreshrate;
+	bool panel_trueaod_state;
+	bool dc_ignore_config;
 };
+
+bool dsi_display_all_displays_dead(void);
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
 {
@@ -328,7 +584,8 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 				struct device_node *parser_node,
 				const char *type,
 				int topology_override,
-				bool trusted_vm_env);
+				bool trusted_vm_env,
+				u32 panel_idx);
 
 void dsi_panel_put(struct dsi_panel *panel);
 
@@ -428,6 +685,8 @@ struct dsi_panel *dsi_panel_ext_bridge_get(struct device *parent,
 
 int dsi_panel_parse_esd_reg_read_configs(struct dsi_panel *panel);
 
+int dsi_panel_parse_panel_cfg(struct dsi_panel *panel, bool is_primary);
+
 void dsi_panel_ext_bridge_put(struct dsi_panel *panel);
 
 int dsi_panel_get_io_resources(struct dsi_panel *panel,
@@ -454,4 +713,26 @@ int dsi_panel_send_cmd(struct dsi_panel *panel,
 
 int dsi_panel_parse_freq_step_table(struct dsi_display_mode *mode,
 				struct dsi_parser_utils *utils);
+int dsi_panel_set_param(struct dsi_panel *panel,
+			struct msm_param_info *param_info);
+
+int dsi_panel_set_partition_refreshrate(struct dsi_panel *panel,
+				struct sde_partition_refreshrate *prr_info);
+
+int dsi_panel_set_moto_drm_command(struct dsi_panel *panel,
+				struct sde_moto_drm_command* mot_cmd);
+
+void dsi_panel_reset_param(struct dsi_panel *panel);
+
+int dsi_panel_get_elvss_data(struct dsi_panel *panel);
+int dsi_panel_get_elvss_data_1(struct dsi_panel *panel);
+int dsi_panel_set_elvss_dim_off(struct dsi_panel *panel, u8 val);
+int dsi_panel_parse_elvss_config(struct dsi_panel *panel, u8 elv_vl);
+int dsi_panel_dfps_send_cmd(struct dsi_panel *panel);
+int dsi_panel_tx_cellid_cmd(struct dsi_panel *panel);
+int dsi_panel_tx_pcd_reg_cmd(struct dsi_panel *panel);
+int set_panelpcdcheck_enable(struct dsi_panel *panel, bool en);
+void dsi_panel_apl_backlight_update(struct dsi_panel *panel, struct dsi_panel_cmd_set *apl_cmd);
+int dsi_panel_read_pcd_reg(struct dsi_panel *panel, bool force_get);
+void dsi_panel_check_pcd_read_flag(struct dsi_panel *panel);
 #endif /* _DSI_PANEL_H_ */

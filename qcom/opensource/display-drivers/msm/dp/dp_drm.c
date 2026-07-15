@@ -19,6 +19,43 @@
 
 #define to_dp_bridge(x)     container_of((x), struct dp_bridge, base)
 
+void static drm_mode_capabilities_check(struct msm_drm_private *priv,
+		struct dp_display_mode *dp_mode,
+		const struct drm_display_mode *drm_mode,
+		const struct msm_resource_caps_info *avail_res, u32 *num_lm_count,
+		struct msm_resource_caps_info *max_dp_avail_res)
+{
+	int rc = 0;
+	bool dsc_capable;
+	u32 num_dsc = 0, num_lm = 0, fps;
+
+	dsc_capable = dp_mode->capabilities & DP_PANEL_CAPS_DSC;
+	fps = dp_mode->timing.refresh_rate;
+
+	rc = msm_get_mixer_count(priv, drm_mode, max_dp_avail_res,
+				&num_lm);
+	if (rc)
+		DP_ERR("error getting mixer count. rc:%d\n", rc);
+
+	if (dsc_capable) {
+		rc = msm_get_dsc_count(priv, drm_mode->hdisplay, &num_dsc);
+		if (rc)
+			DP_ERR("error getting dsc count. rc:%d\n", rc);
+
+		num_dsc = max(num_lm, num_dsc);
+		if ((num_dsc > avail_res->num_lm) || (num_dsc > avail_res->num_dsc)) {
+			DP_DEBUG("mode %sx%d: not enough resources for dsc %d dsc_a:%d lm_a:%d\n",
+				drm_mode->name, fps, num_dsc, avail_res->num_dsc,
+				avail_res->num_lm);
+
+			DP_DEBUG("Clearing dsc mode capabilities for this mode \n");
+			dp_mode->capabilities &= ~DP_PANEL_CAPS_DSC;
+			dp_mode->timing.comp_info.enabled = false;
+		}
+	}
+	*num_lm_count = num_lm;
+}
+
 void convert_to_drm_mode(const struct dp_display_mode *dp_mode,
 				struct drm_display_mode *drm_mode)
 {
@@ -98,6 +135,7 @@ static void dp_bridge_pre_enable(struct drm_bridge *drm_bridge)
 		return;
 	}
 
+	DP_INFO("##\n");
 	/* By this point mode should have been validated through mode_fixup */
 	rc = dp->set_mode(dp, bridge->dp_panel, &bridge->dp_mode);
 	if (rc) {
@@ -120,6 +158,7 @@ static void dp_bridge_pre_enable(struct drm_bridge *drm_bridge)
 	if (rc)
 		DP_ERR("[%d] DP display enable failed, rc=%d\n",
 		       bridge->id, rc);
+	DP_INFO("==\n");
 }
 
 static void dp_bridge_enable(struct drm_bridge *drm_bridge)
@@ -146,6 +185,7 @@ static void dp_bridge_enable(struct drm_bridge *drm_bridge)
 
 	dp = bridge->display;
 
+	DP_INFO("call dp_display_post_enable\n");
 	rc = dp->post_enable(dp, bridge->dp_panel);
 	if (rc)
 		DP_ERR("[%d] DP display post enable failed, rc=%d\n",
@@ -181,6 +221,7 @@ static void dp_bridge_disable(struct drm_bridge *drm_bridge)
 		return;
 	}
 
+	DP_INFO("call dp_display_pre_disable\n");
 	if (dp)
 		sde_connector_helper_bridge_disable(bridge->connector);
 
@@ -215,6 +256,7 @@ static void dp_bridge_post_disable(struct drm_bridge *drm_bridge)
 
 	dp = bridge->display;
 
+	DP_INFO("call dp_display_disable\n");
 	rc = dp->disable(dp, bridge->dp_panel);
 	if (rc) {
 		DP_ERR("[%d] DP display disable failed, rc=%d\n",
@@ -236,6 +278,13 @@ static void dp_bridge_mode_set(struct drm_bridge *drm_bridge,
 {
 	struct dp_bridge *bridge;
 	struct dp_display *dp;
+	struct drm_connector *drm_conn;
+	struct sde_connector *sde_conn;
+	struct msm_drm_private *priv;
+	struct msm_resource_caps_info avail_res;
+	struct msm_resource_caps_info avail_dp_res;
+	u32 lm_count = 0;
+	int rc = 0;
 
 	if (!drm_bridge || !mode || !adjusted_mode) {
 		DP_ERR("Invalid params\n");
@@ -253,11 +302,22 @@ static void dp_bridge_mode_set(struct drm_bridge *drm_bridge,
 		return;
 	}
 
+	drm_conn = bridge->connector;
+	sde_conn = to_sde_connector(drm_conn);
+	priv = drm_conn->dev->dev_private;
+
 	dp = bridge->display;
+
+	sde_connector_get_avail_res_info(drm_conn, &avail_res);
+	rc = dp->get_available_dp_resources(dp, &avail_res, &avail_dp_res);
+	if (rc)
+		DP_ERR("error getting max dp resources. rc:%d\n", rc);
 
 	dp->convert_to_dp_mode(dp, bridge->dp_panel, adjusted_mode,
 			&bridge->dp_mode);
 
+	drm_mode_capabilities_check(priv, &bridge->dp_mode, adjusted_mode,
+			&avail_res, &lm_count, &avail_dp_res);
 	dp->clear_reservation(dp, bridge->dp_panel);
 }
 
@@ -458,12 +518,6 @@ int dp_connector_get_mode_info(struct drm_connector *connector,
 		return rc;
 	}
 
-	rc = msm_get_mixer_count(priv, drm_mode, &avail_dp_res,
-			&topology->num_lm);
-	if (rc) {
-		DP_ERR("error getting mixer count. rc:%d\n", rc);
-		return rc;
-	}
 	/* reset dp connector lm_mask for every connection event and
 	 * this will get re-populated in resource manager based on
 	 * resolution and topology of dp display.
@@ -481,6 +535,8 @@ int dp_connector_get_mode_info(struct drm_connector *connector,
 
 	dp_disp->convert_to_dp_mode(dp_disp, dp_panel, drm_mode, &dp_mode);
 
+	drm_mode_capabilities_check(priv, &dp_mode, drm_mode,
+			avail_res, &topology->num_lm, &avail_dp_res);
 	if (dp_mode.timing.comp_info.enabled) {
 		memcpy(&mode_info->comp_info,
 			&dp_mode.timing.comp_info,

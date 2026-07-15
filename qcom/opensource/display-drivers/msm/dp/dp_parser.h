@@ -277,12 +277,14 @@ struct dp_parser {
 	bool has_widebus;
 	bool has_4ppc_enabled;
 	bool gpio_aux_switch;
+	bool typec_bridge;
 	u32 mst_fixed_port[MAX_DP_MST_STREAMS];
 	u32 qos_cpu_mask;
 	unsigned long qos_cpu_latency;
 	u32 pixel_base_off[MAX_DP_MST_STREAMS];
 	const char *mst_fixed_display_type[MAX_DP_MST_STREAMS];
 	const char *display_type;
+	bool dp_downgrade;
 
 	u8 *swing_hbr2_3;
 	u8 *pre_emp_hbr2_3;

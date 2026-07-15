@@ -4208,10 +4208,12 @@ static void sde_encoder_virt_enable(struct drm_encoder *drm_enc)
 	if (!sde_enc->crtc)
 		sde_enc->crtc = drm_enc->crtc;
 
-	cur_mode = &sde_enc->base.crtc->state->adjusted_mode;
+	if (sde_enc->base.crtc->state){
+		cur_mode = &sde_enc->base.crtc->state->adjusted_mode;
 
-	SDE_DEBUG_ENC(sde_enc, "\n");
-	SDE_EVT32(DRMID(drm_enc), cur_mode->hdisplay, cur_mode->vdisplay);
+		SDE_DEBUG_ENC(sde_enc, "\n");
+		SDE_EVT32(DRMID(drm_enc), cur_mode->hdisplay, cur_mode->vdisplay);
+	}
 
 	for (i = 0; i < sde_enc->num_phys_encs; i++) {
 		struct sde_encoder_phys *phys = sde_enc->phys_encs[i];
@@ -4231,6 +4233,12 @@ static void sde_encoder_virt_enable(struct drm_encoder *drm_enc)
 	}
 
 	_sde_encoder_input_handler_register(drm_enc);
+
+	if (!sde_enc->cur_master || !sde_enc->cur_master->connector) {
+		SDE_ERROR("invalid master or its connector.\n");
+		return;
+	}
+
 	c_state = to_sde_connector_state(sde_enc->cur_master->connector->state);
 	if (!c_state) {
 		SDE_ERROR("invalid connector state\n");
@@ -4782,6 +4790,9 @@ static void sde_encoder_underrun_callback(struct drm_encoder *drm_enc,
 			sde_enc->cur_master->ops.get_underrun_line_count)
 		sde_enc->cur_master->ops.get_underrun_line_count(
 				sde_enc->cur_master);
+
+	pr_warn("Underrun detected count:%d",
+                atomic_read(&phy_enc->underrun_cnt));
 
 	trace_sde_encoder_underrun(DRMID(drm_enc),
 		atomic_read(&phy_enc->underrun_cnt));

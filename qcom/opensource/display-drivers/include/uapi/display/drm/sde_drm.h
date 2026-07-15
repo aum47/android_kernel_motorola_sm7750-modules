@@ -1080,6 +1080,59 @@ struct sde_drm_dnsc_blur_cfg {
 #define DRM_IOCTL_MSM_EARLY_EPT DRM_IOW((DRM_COMMAND_BASE + \
 			DRM_MSM_EARLY_EPT), struct drm_msm_display_early_ept)
 
+/* panel feature */
+typedef enum {
+	PARAM_HBM = 0,
+	PARAM_CABC,
+	PARAM_ACL,
+	PARAM_DC,
+	POWER_MODE_MAX_NUM,
+	PARAM_COLOR = POWER_MODE_MAX_NUM,
+	PARAM_MAX_NUM
+} paramId_t;
+
+struct panel_param_info {
+	paramId_t param_idx;
+	__u32 value;
+};
+
+#define DRM_SET_PANEL_FEATURE	(DRM_COMMAND_END -1)
+#define DRM_IOCTL_SET_PANEL_FEATURE          DRM_IOWR(DRM_SET_PANEL_FEATURE, struct panel_param_info)
+#define DRM_GET_PANEL_FEATURE	(DRM_COMMAND_END-2)
+#define DRM_IOCTL_GET_PANEL_FEATURE          DRM_IOWR(DRM_GET_PANEL_FEATURE, struct panel_param_info)
+
+struct sde_partition_refreshrate {
+     /** The refresh rate of the first refreshrate partition */
+    __u32 refreshrate1st;
+     /** The boundary line number between the first partition and the second partition */
+    __u32 boundaryLine1st;
+     /** The refresh rate of the second refreshrate partition */
+    __u32 refreshrate2nd;
+     /** The boundary line number between the second partition and the third partition */
+    __u32 boundaryLine2nd;
+     /** The refresh rate of the third refreshrate partition */
+    __u32 refreshrate3rd;
+     /** Reserved data */
+    __u32 reserved;
+};
+#define DRM_SET_PARTITION_REFRESHRATE	(DRM_COMMAND_END -3)
+#define DRM_IOCTL_SET_PARTITION_REFRESHRATE          DRM_IOWR(DRM_SET_PARTITION_REFRESHRATE, struct sde_partition_refreshrate)
+#define DRM_GET_PARTITION_REFRESHRATE	(DRM_COMMAND_END-4)
+#define DRM_IOCTL_GET_PARTITION_REFRESHRATE          DRM_IOWR(DRM_GET_PARTITION_REFRESHRATE, struct sde_partition_refreshrate)
+
+/* Moto defined command intf*/
+typedef enum {
+	MOT_CMD_APL = 0,
+	MOT_CMD_MAX_NUM
+} motoCmd_t;
+struct sde_moto_drm_command {
+     /** The command id to set to driver */
+    __u32 id;
+     /** The value of command */
+    __u32 val;
+};
+#define DRM_IOCTL_SET_MOTO_DRM_COMMAND DRM_IOW((DRM_COMMAND_END -5), struct sde_moto_drm_command)
+
 #if defined(__cplusplus)
 }
 #endif

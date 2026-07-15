@@ -294,6 +294,38 @@ enum dsi_dyn_clk_feature_type {
  * @DSI_CMD_SET_STICKY_ON_FLY:             Still indication enable for only one frame
  * @DSI_CMD_SET_TRIGGER_SELF_REFRESH:      Trigger self refresh from Gram
  * @DSI_CMD_SET_FPS_SWITCH:		   FPS Switch
+ * @DSI_CMD_SET_HBM_FOD_ON:                Turning HBM_FOD on
+ * @DSI_CMD_SET_HBM_ON:                    Turning HBM on
+ * @DSI_CMD_SET_HBM_OFF:                   Turning HBM off
+ * @DSI_CMD_SET_ACL_ON:                    Turning ACL on
+ * @DSI_CMD_SET_ACL_OFF:                   Turning ACL off
+ * @DSI_CMD_SET_HBM_DIM_OFF:		       Turning HBM DIM off
+ * @DSI_CMD_SET_CABC_UI:                   CABC UI mode
+ * @DSI_CMD_SET_CABC_MV:                   CABC MV mode
+ * @DSI_CMD_SET_CABC_DIS:                  CABC DIS mode
+ * @DSI_CMD_SET_DC_ON:                    DC mode on
+ * @DSI_CMD_SET_DC_OFF:                   DC mode off
+ * @DSI_CMD_SET_COLOR_VBT :                    COLOR VBT mode
+ * @DSI_CMD_SET_COLOR_STD:                   COLOR STD mode
+ * @DSI_CMD_SET_COLOR_GAME :                    COLOR GAME mode
+ * @DSI_CMD_SET_COLOR_NONE:                   COLOR NONE mode
+ * @DSI_CMD_SET_DFPS_CMD_48:                DFPS switch to 48
+ * @DSI_CMD_SET_DFPS_CMD_60:                DFPS switch to 60
+ * @DSI_CMD_SET_DFPS_CMD_90:                DFPS switch to 90
+ * @DSI_CMD_SET_DFPS_CMD_120:               DFPS switch to 120
+ * @DSI_CMD_SET_DFPS_CMD_144:               DFPS switch to 144
+ * @DSI_CMD_SET_DFPS_CMD_165:               DFPS switch to 165
+ * @DSI_CMD_SET_PANEL_CELLID:               Panel cellid
+ * @DSI_CMD_SET_APL_ON:              apl on
+ * @DSI_CMD_SET_APL_OFF:               apl off
+ * @DSI_CMD_SET_PANEL_PCD_ENABLE:               Panel pcd check enable
+ * @DSI_CMD_SET_PANEL_PCD_DISABLE:               Panel pcd check disable
+ * @DSI_CMD_SET_PANEL_PRR_ENABLE,                partition refreshrate ON
+ * @	DSI_CMD_SET_PANEL_PRR_DISABLE,              partition refreshrate OFF
+ * @DSI_CMD_SET_LP3:                       Low power mode 3 //0~60nit using 24hz
+ * @DSI_CMD_SET_PANEL_PCD_REG:             Panel pcd reg
+ * @DSI_CMD_SET_CMD_BACKLIGHT: Update video mode true aod backlight
+ * @DSI_CMD_SET_CMD_SWITCH_IN2:             Cmd mode switch in2
  * @DSI_CMD_SET_MAX
  */
 enum dsi_cmd_set_type {
@@ -338,6 +370,38 @@ enum dsi_cmd_set_type {
 	DSI_CMD_SET_STICKY_ON_FLY,
 	DSI_CMD_SET_TRIGGER_SELF_REFRESH,
 	DSI_CMD_SET_FPS_SWITCH,
+	DSI_CMD_SET_HBM_FOD_ON,
+	DSI_CMD_SET_HBM_ON,
+	DSI_CMD_SET_HBM_OFF,
+	DSI_CMD_SET_ACL_ON,
+	DSI_CMD_SET_ACL_OFF,
+	DSI_CMD_SET_HBM_DIM_OFF,
+	DSI_CMD_SET_CABC_UI,
+	DSI_CMD_SET_CABC_MV,
+	DSI_CMD_SET_CABC_DIS,
+	DSI_CMD_SET_DC_ON,
+	DSI_CMD_SET_DC_OFF,
+	DSI_CMD_SET_COLOR_VBT,
+	DSI_CMD_SET_COLOR_STD,
+	DSI_CMD_SET_COLOR_GAME,
+	DSI_CMD_SET_COLOR_NONE,
+	DSI_CMD_SET_DFPS_CMD_48,
+	DSI_CMD_SET_DFPS_CMD_60,
+	DSI_CMD_SET_DFPS_CMD_90,
+	DSI_CMD_SET_DFPS_CMD_120,
+	DSI_CMD_SET_DFPS_CMD_144,
+	DSI_CMD_SET_DFPS_CMD_165,
+	DSI_CMD_SET_PANEL_CELLID,
+	DSI_CMD_SET_APL_ON,
+	DSI_CMD_SET_APL_OFF,
+	DSI_CMD_SET_PANEL_PCD_ENABLE,
+	DSI_CMD_SET_PANEL_PCD_DISABLE,
+	DSI_CMD_SET_PANEL_PRR_ENABLE,
+	DSI_CMD_SET_PANEL_PRR_DISABLE,
+	DSI_CMD_SET_LP3,
+	DSI_CMD_SET_PANEL_PCD_REG,
+	DSI_CMD_SET_CMD_BACKLIGHT,
+	DSI_CMD_SET_CMD_SWITCH_IN2,
 	DSI_CMD_SET_MAX
 };
 
@@ -494,6 +558,8 @@ struct dsi_mode_info {
 	u32 avr_step_fps;
 	u32 esync_emsync_fps;
 	u32 te_pulse_width_us;
+	// Motorola zhanggb, add refreshrate group, IKSWT-18219
+	u32 refresh_rate_group_flag;
 };
 
 /**

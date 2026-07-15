@@ -33,8 +33,6 @@ struct dp_ctrl {
 			enum dp_stream_id strm,
 			u32 ch_start_slot, u32 ch_tot_slots);
 	void (*set_sim_mode)(struct dp_ctrl *dp_ctrl, bool en);
-	int (*setup_misr)(struct dp_ctrl *dp_ctrl);
-	int (*read_misr)(struct dp_ctrl *dp_ctrl, struct dp_misr40_data *data);
 };
 
 struct dp_ctrl_in {

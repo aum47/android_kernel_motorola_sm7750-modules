@@ -40,6 +40,7 @@
 #include <linux/kthread.h>
 #include <linux/version.h>
 #include <linux/delay.h>
+#include <linux/notifier.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
@@ -268,12 +269,19 @@ enum msm_mdp_conn_property {
 	CONNECTOR_PROP_WB_ROT_BYTES_PER_CLK,
 	CONNECTOR_PROP_BPP_MODE,
 
+	/* MOT feature panel*/
+	CONNECTOR_PROP_HBM,
+	CONNECTOR_PROP_CABC,
+	CONNECTOR_PROP_ACL,
+	CONNECTOR_PROP_DC,
+	CONNECTOR_PROP_COLOR,
 	/* total # of properties */
 	CONNECTOR_PROP_COUNT
 };
 
 #define MSM_GPU_MAX_RINGS 4
 #define MAX_H_TILES_PER_DISPLAY 2
+#define MSM_DISP_NAME_LEN_MAX  128
 
 /**
  * enum msm_display_compression_type - compression method used for pixel stream
@@ -505,6 +513,28 @@ struct msm_roi_caps {
 	struct msm_roi_alignment align;
 };
 
+enum msm_param_state {
+	PARAM_STATE_OFF = 0,
+	PARAM_STATE_ON,
+	PARAM_STATE_NUM,
+	PARAM_STATE_DISABLE = 0xFFFF,
+};
+
+enum msm_param_id {
+	PARAM_HBM_ID = 0,
+	PARAM_CABC_ID,
+	PARAM_ACL_ID,
+	PARAM_DC_ID,
+	PARAM_COLOR_ID,
+	PARAM_ID_NUM
+};
+
+struct msm_param_info {
+	enum msm_param_id param_idx;
+	enum msm_mdp_conn_property param_conn_idx;
+	int value;
+};
+
 /**
  * struct msm_display_dsc_info - defines dsc configuration
  * @config                   DSC encoder configuration
@@ -554,6 +584,7 @@ struct msm_display_dsc_info {
 	u32 dsc_4hsmerge_alignment;
 	bool half_panel_pu;
 	bool rc_override_v1;
+	bool dsc_novatek_ic;
 };
 
 
@@ -1022,6 +1053,10 @@ struct msm_resource_caps_info {
  * @h_tile_instance:    Controller instance used per tile. Number of elements is
  *                      based on num_of_h_tiles
  * @is_connected:       Set to true if display is connected
+ * @panel_id
+ * @panel_ver
+ * @panel_regDA
+ * @panel_name[MSM_DISP_NAME_LEN_MAX];
  * @width_mm:           Physical width
  * @height_mm:          Physical height
  * @max_width:          Max width of display. In case of hot pluggable display
@@ -1062,6 +1097,12 @@ struct msm_display_info {
 	uint32_t h_tile_instance[MAX_H_TILES_PER_DISPLAY];
 
 	bool is_connected;
+
+	uint64_t panel_id;
+	uint64_t panel_ver;
+	uint32_t panel_regDA;
+	char panel_name[MSM_DISP_NAME_LEN_MAX];
+	char panel_supplier[MSM_DISP_NAME_LEN_MAX];
 
 	unsigned int width_mm;
 	unsigned int height_mm;
@@ -1314,6 +1355,7 @@ struct msm_drm_private {
 
 	/* list of component registered for notification */
 	struct blocking_notifier_head component_notifier_list;
+	struct notifier_block msm_drv_notifier;
 };
 
 /* get struct msm_kms * from drm_device * */

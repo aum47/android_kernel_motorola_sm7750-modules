@@ -146,6 +146,15 @@ struct msm_kms_funcs {
 			u32 hdisplay, u32 *num_dsc);
 	bool (*in_trusted_vm)(const struct msm_kms *kms);
 	bool (*in_loopback_mode)(struct drm_crtc_state *crtc_state);
+	/* set panel feature */
+	int (*set_panel_feature)(const struct msm_kms *kms,
+			struct panel_param_info param_info);
+	/* set panel feature */
+	int (*set_partition_refreshrate)(const struct msm_kms *kms,
+			struct sde_partition_refreshrate prr_info);
+	/* set moto drm command, a common interface to call from hal to driver */
+	int (*set_moto_drm_command)(const struct msm_kms *kms,
+			struct sde_moto_drm_command mot_cmd);
 };
 
 struct msm_kms {
