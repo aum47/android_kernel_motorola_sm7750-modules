@@ -14,6 +14,13 @@
 #include "qmi.h"
 #include "genl.h"
 
+// BEGIN Support loading different bdwlan.elf
+#include <linux/bootconfig.h>
+#include <linux/slab.h>
+#include <linux/vmalloc.h>
+#define BOOTCONFIG_FULLPATH "/proc/bootconfig"
+//END Support loading different bdwlan.elf
+
 #define WLFW_SERVICE_INS_ID_V01		1
 #define WLFW_CLIENT_ID			0x4b4e454c
 #define BDF_FILE_NAME_PREFIX		"bdwlan"
@@ -81,6 +88,205 @@ void cnss_ignore_qmi_failure(bool ignore)
 #define CNSS_QMI_ASSERT() do { } while (0)
 void cnss_ignore_qmi_failure(bool ignore) { }
 #endif
+// BEGIN Support loading different bdwlan.elf
+#define NV_EPA "epa"
+#define NV_IPA "ipa"
+#define MOTO_STRING_LEN 32
+static char device_ptr[MOTO_STRING_LEN] = {0};
+static char radio_ptr[MOTO_STRING_LEN] = {0};
+static char sku_ptr[MOTO_STRING_LEN] = {0};
+static char *bootargs_str;
+
+typedef struct moto_product {
+	char hw_device[32];
+	char hw_radio[32];
+	char nv_name[64];
+} moto_product;
+
+typedef struct {
+    char* sku;
+    char* hw_radio;
+} moto_sku_radio_map_t;
+
+/* Some cases, we have to get radio by sku(AKA model number) */
+static moto_sku_radio_map_t moto_sku_radio_map_list[] = {
+    {"XT2321-2",    "PRC"},
+    {NULL,          NULL},
+};
+
+static moto_product products_list[] = {
+	{"leap",	"all",	NV_EPA},
+	/* Terminator */
+	{{0}, {0}, {0}},
+};
+
+
+static int cnss_get_bootarg_dt(char *key, char **value, char *prop, char *spl_flag)
+{
+	const char *bootargs_tmp = NULL;
+	char *idx = NULL;
+	char *kvpair = NULL;
+	int err = 1;
+	struct device_node *n = of_find_node_by_path("/chosen");
+	size_t bootargs_tmp_len = 0;
+
+	if (n == NULL)
+		goto err;
+
+	if (of_property_read_string(n, prop, &bootargs_tmp) != 0)
+		goto putnode;
+
+	bootargs_tmp_len = strlen(bootargs_tmp);
+	if (!bootargs_str) {
+		/* The following operations need a non-const
+		 * version of bootargs
+		 */
+		bootargs_str = kzalloc(bootargs_tmp_len + 1, GFP_KERNEL);
+		if (!bootargs_str)
+			goto putnode;
+	}
+	strlcpy(bootargs_str, bootargs_tmp, bootargs_tmp_len + 1);
+
+	idx = strnstr(bootargs_str, key, strlen(bootargs_str));
+	if (idx) {
+		kvpair = strsep(&idx, " ");
+		if (kvpair)
+			if (strsep(&kvpair, "=")) {
+				*value = strsep(&kvpair, spl_flag);
+				if (*value)
+					err = 0;
+			}
+	}
+
+putnode:
+	of_node_put(n);
+err:
+	return err;
+}
+
+static int is_void_product(moto_product *entry)
+{
+	return entry && !strlen(entry->hw_device) && !strlen(entry->hw_radio);
+}
+
+static int num_of_products(moto_product *list)
+{
+	int num = 0;
+	if (!list) return 0;
+	while (!is_void_product(list + num)) num++;
+	return num;
+}
+
+static int get_moto_device(void)
+{
+        char *bootdevice = NULL;
+        int rc = 0;
+        rc = cnss_get_bootarg_dt("androidboot.device=", &bootdevice, "mmi,bootconfig", "\n");
+        if (rc || !bootdevice){
+            cnss_pr_err("device string is error");
+            return -ENOMEM;
+        }else{
+            strlcpy(device_ptr, bootdevice,MOTO_STRING_LEN);
+            return 0;
+        }
+}
+
+static int get_moto_sku(void)
+{
+    char *sku_val = NULL;
+    int rc = 0;
+
+    rc = cnss_get_bootarg_dt("androidboot.hardware.sku=", &sku_val, "mmi,bootconfig", "\n");
+    if (rc || !sku_val) {
+        cnss_pr_err("get hardware.sku string failed");
+        return -ENOMEM;
+    }else{
+        strlcpy(sku_ptr, sku_val, MOTO_STRING_LEN);
+        return 0;
+    }
+}
+
+static int find_radio_by_sku(char* sku_val)
+{
+    int i = 0;
+
+    while(moto_sku_radio_map_list[i].sku != NULL) {
+        if (!strncmp(moto_sku_radio_map_list[i].sku, sku_val, strlen(sku_val))) {
+            strlcpy(radio_ptr, moto_sku_radio_map_list[i].hw_radio, sizeof(radio_ptr) - 1);
+            return 0;
+        } else {
+            i++;
+            continue;
+        }
+    }
+
+    /* No matched sku string is found */
+    if (strlen(radio_ptr) == 0){
+        return -1;
+    }
+
+    return 0;
+}
+
+static int get_moto_radio(void)
+{
+    char *radiodevice = NULL;
+    int rc = 0;
+
+    if (!get_moto_sku()) {
+        if (find_radio_by_sku(sku_ptr) == 0)
+        {
+            cnss_pr_dbg("get radio by sku:%s", radio_ptr);
+            return 0;
+        } else {
+            cnss_pr_dbg("sku&radio not listed!");
+        }
+    }
+
+    rc = cnss_get_bootarg_dt("androidboot.radio=", &radiodevice, "mmi,bootconfig", "\n");
+    if (rc || !radiodevice) {
+        cnss_pr_err("radio string is error");
+        return -ENOMEM;
+    }else{
+        strlcpy(radio_ptr, radiodevice,MOTO_STRING_LEN);
+        return 0;
+    }
+}
+
+static int selectFileNameByProduct(struct cnss_plat_data *plat_priv, char *filename)
+{
+	int i, num, ret = 0;
+        if(get_moto_radio() != 0 || get_moto_device() != 0){
+              cnss_pr_err("device or radio not present ");
+        }
+
+	num = num_of_products(products_list);
+	for (i = 0; i < num; i++) {
+		if (strlen(device_ptr) != strlen((products_list + i)->hw_device)) {
+			continue;
+		}
+		if (strncmp(device_ptr, (products_list+i)->hw_device, strlen((products_list+i)->hw_device)) == 0) {
+			if(strncmp(radio_ptr, (products_list+i)->hw_radio, strlen((products_list+i)->hw_radio)) == 0 ||
+				strncmp((products_list+i)->hw_radio, "all", strlen((products_list+i)->hw_radio)) == 0) {
+				if(0x400c1211 == plat_priv->soc_info.soc_id)  //GF chip
+				{
+					sprintf(filename, "%s.%s.%s", ELF_BDF_FILE_NAME_GF,
+					(products_list+i)->hw_device, (products_list+i)->nv_name);
+				}
+				else{
+					sprintf(filename, "%s.%s.%s", ELF_BDF_FILE_NAME,
+					(products_list+i)->hw_device, (products_list+i)->nv_name);
+				}
+
+				ret = 1;
+				break;
+			}
+		}
+	}
+
+        return ret;
+}
+// END Support loading different bdwlan.elf
 
 static char *cnss_qmi_mode_to_str(enum cnss_driver_mode mode)
 {
@@ -884,8 +1090,12 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 
 	switch (bdf_type) {
 	case CNSS_BDF_ELF:
+		// Support loading different bdwlan.elf
+		if (selectFileNameByProduct(plat_priv, filename_tmp) > 0) {
+			cnss_pr_dbg("%s: Using %s for %s\n",
+				    __func__, filename_tmp, device_ptr);
 		/* Board ID will be equal or less than 0xFF in GF mask case */
-		if (plat_priv->board_info.board_id == 0xFF) {
+		} else if (plat_priv->board_info.board_id == 0xFF) {
 			if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK)
 				snprintf(filename_tmp, filename_len,
 					 ELF_BDF_FILE_NAME_GF);
@@ -933,7 +1143,12 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 		}
 		break;
 	case CNSS_BDF_REGDB:
-		snprintf(filename_tmp, filename_len, REGDB_FILE_NAME);
+		if (device_ptr[0] != '\0') {
+			snprintf(filename_tmp, filename_len, "%s.%s", REGDB_FILE_NAME, device_ptr);
+		} else {
+			cnss_pr_dbg("device_ptr is not available yet, use default regdb file");
+			snprintf(filename_tmp, filename_len, REGDB_FILE_NAME);
+		}
 		break;
 	case CNSS_BDF_HDS:
 		snprintf(filename_tmp, filename_len, HDS_FILE_NAME);
@@ -983,12 +1198,19 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 		goto err_req_fw;
 
 	cnss_pr_dbg("Invoke firmware_request_nowarn for %s\n", filename);
-	if (bdf_type == CNSS_BDF_REGDB)
+	if (bdf_type == CNSS_BDF_REGDB) {
 		ret = cnss_request_firmware_direct(plat_priv, &fw_entry,
 						   filename);
-	else
+		if (ret != 0) {
+			memset(filename, 0, MAX_FIRMWARE_NAME_LEN);
+			cnss_bus_add_fw_prefix_name(plat_priv, filename, REGDB_FILE_NAME);
+			cnss_pr_dbg("Trying to load %s\n", filename);
+			ret = cnss_request_firmware_direct(plat_priv, &fw_entry,
+							   filename);
+		}
+	} else {
 		ret = cnss_request_firmware_update_timer(plat_priv, &fw_entry, filename);
-
+	}
 
 	if (ret) {
 		cnss_pr_err("Failed to load %s: %s, ret: %d\n",
