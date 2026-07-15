@@ -290,6 +290,9 @@ struct cam_req_mgr_tbl_slot {
 	uint32_t                               inject_delay_at_sof;
 	uint32_t                               inject_delay_at_eof;
 	struct  crm_tbl_slot_special_ops       ops;
+#ifdef CONFIG_MOT_SENSOR_STRICT_PERFRAMECONTROL
+	__u32                                  op_code;
+#endif
 };
 
 /**
@@ -550,6 +553,10 @@ struct cam_req_mgr_core_link {
 	uint32_t                             resume_sync_curr_mask;
 	uint64_t                             last_applied_done_timestamp;
 	uint32_t                             exp_time_for_resume;
+#ifdef CONFIG_MOT_SENSOR_STRICT_PERFRAMECONTROL
+	uint64_t                             sof_timestamp_jiffies;
+	bool                                 reapply_req;
+#endif
 };
 
 /**

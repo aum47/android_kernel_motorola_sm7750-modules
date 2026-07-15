@@ -214,6 +214,14 @@ def _define_module(target, variant):
                     "drivers/cam_sensor_module/cam_flash/cam_flash_core.c",
                     "drivers/cam_sensor_module/cam_flash/cam_flash_soc.c",
                     "drivers/cam_sensor_module/cam_sensor_module_debug.c",
+                    "drivers/cam_sensor_module/cam_actuator/mot_actuator.c",
+                    "drivers/cam_sensor_module/cam_actuator/mot_actuator_policy.c",
+                    "drivers/cam_sensor_module/cam_actuator/mot_ois.c",
+                ],
+            },
+            "CONFIG_CCI_DEBUG_INTF": {
+                True: [
+                    "drivers/cam_sensor_module/cam_cci/cci_intf.c",
                 ],
             },
             "CONFIG_SPECTRA_CUSTOM": {
@@ -229,6 +237,12 @@ def _define_module(target, variant):
             },
             "CONFIG_QCOM_BUS_SCALING": {
                 True: ["drivers/cam_utils/cam_soc_bus.c"],
+            },
+            "CONFIG_MOT_OIS_EARLY_UPGRADE_FW": {
+                True: [
+                    "drivers/cam_sensor_module/cam_ois/cam_ois_sem1217s.c",
+                    "drivers/cam_sensor_module/cam_ois/cam_ois_dw9784.c",
+                ],
             },
             "CONFIG_CAM_PRESIL": {
                 # Sources need to be available to specify

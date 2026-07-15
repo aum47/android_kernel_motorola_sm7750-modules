@@ -124,6 +124,15 @@ struct cam_actuator_ctrl_t {
 	uint32_t last_flush_req;
 	struct list_head read_buf_list;
 	struct mutex read_buf_lock;
+#ifdef CONFIG_MOT_OIS_AF_USE_SAME_IC
+	bool af_ois_use_same_ic;
+#endif
+#ifdef CONFIG_MOT_DONGWOON_OIS_AF_DRIFT
+	bool af_drift_supported;
+#endif
+#ifdef CONFIG_AF_NOISE_ELIMINATION
+	bool is_multi_user_supported;
+#endif
 };
 
 /**

@@ -12,6 +12,19 @@
 #include "cam_common_util.h"
 #include "cam_packet_util.h"
 #include "cam_mem_mgr_api.h"
+#ifdef CONFIG_AF_NOISE_ELIMINATION
+#include "mot_actuator_policy.h"
+#include "mot_actuator.h"
+#endif
+
+#ifdef CONFIG_MOT_OIS_AF_USE_SAME_IC
+extern atomic_t g_ois_init_finished;
+#endif
+
+#ifdef CONFIG_MOT_DONGWOON_OIS_AF_DRIFT
+extern atomic_t m_ois_init;
+extern int cam_ois_write_af_drift(uint32_t dac);
+#endif
 
 int32_t cam_actuator_construct_default_power_setting(
 	struct cam_sensor_power_ctrl_t *power_info)
@@ -256,6 +269,19 @@ int32_t cam_actuator_apply_settings(struct cam_actuator_ctrl_t *a_ctrl,
 	struct i2c_settings_list *i2c_list;
 	int32_t rc = 0;
 
+#ifdef CONFIG_MOT_DONGWOON_OIS_AF_DRIFT
+	struct cam_sensor_i2c_reg_setting * i2c_reg = NULL;
+	uint32_t dac = 0;
+#endif
+
+#ifdef CONFIG_MOT_OIS_AF_USE_SAME_IC
+	if ((a_ctrl->af_ois_use_same_ic == true) &&
+		(atomic_read(&g_ois_init_finished) == 0)) {
+			CAM_INFO(CAM_ACTUATOR, "OIS does't finish to init, skip writed AF setting to avoid break AF function");
+			return 0;
+	}
+#endif
+
 	if (a_ctrl == NULL || i2c_set == NULL) {
 		CAM_ERR(CAM_ACTUATOR, "Invalid Args");
 		return -EINVAL;
@@ -265,6 +291,13 @@ int32_t cam_actuator_apply_settings(struct cam_actuator_ctrl_t *a_ctrl,
 		CAM_ERR(CAM_ACTUATOR, " Invalid settings");
 		return -EINVAL;
 	}
+#ifdef CONFIG_AF_NOISE_ELIMINATION
+	/*Usually actuator initial setting will execute power down reset(PD), actuator can't respond
+	  CCI access for a while after PD. Add lock to avoid access actuator while PD operation.*/
+	if (a_ctrl->is_multi_user_supported) {
+		mot_actuator_lock();
+	}
+#endif
 
 	list_for_each_entry(i2c_list,
 		&(i2c_set->list_head), list) {
@@ -279,8 +312,46 @@ int32_t cam_actuator_apply_settings(struct cam_actuator_ctrl_t *a_ctrl,
 			CAM_DBG(CAM_ACTUATOR,
 				"Success:request ID: %d",
 				i2c_set->request_id);
+
+#ifdef CONFIG_MOT_DONGWOON_OIS_AF_DRIFT
+			if (a_ctrl->af_drift_supported == true &&
+				(atomic_read(&m_ois_init) == 1) &&
+				i2c_list != NULL) {
+
+				#define ADDR_ACTUATOR 0x18
+				#define REG_ACTUATOR 0x00
+				#define DATA_SHIFT 4
+
+				i2c_reg = &(i2c_list->i2c_settings);
+
+				if (i2c_reg != NULL &&
+					i2c_reg->reg_setting != NULL &&
+					a_ctrl->io_master_info.cci_client != NULL &&
+					a_ctrl->io_master_info.cci_client->sid == (ADDR_ACTUATOR >> 1) &&
+					i2c_reg->addr_type == CAMERA_SENSOR_I2C_TYPE_BYTE &&
+					i2c_reg->data_type == CAMERA_SENSOR_I2C_TYPE_WORD &&
+					i2c_reg->reg_setting[0].reg_data != 0 &&
+					i2c_reg->reg_setting[0].reg_addr == REG_ACTUATOR)
+				{
+					dac = i2c_reg->reg_setting[0].reg_data >> DATA_SHIFT;
+
+					rc = cam_ois_write_af_drift(dac);
+					if (rc < 0) {
+						CAM_ERR(CAM_ACTUATOR, "Failed to apply af drift settings: %d", rc);
+						rc = 0; // avoid damage actuator function
+					}
+				}
+			}
+#endif
 		}
 	}
+#ifdef CONFIG_AF_NOISE_ELIMINATION
+	/*Usually actuator initial setting will execute power down reset(PD), actuator can't respond
+	CCI access for a while after PD. Add lock to avoid access actuator while PD operation.*/
+	if (a_ctrl->is_multi_user_supported) {
+		mot_actuator_unlock();
+	}
+#endif
 
 	return rc;
 }
@@ -614,6 +685,14 @@ int32_t cam_actuator_i2c_pkt_parse(struct cam_actuator_ctrl_t *a_ctrl,
 			}
 			cam_mem_put_cpu_buf(cmd_desc[i].mem_handle);
 		}
+#ifdef CONFIG_AF_NOISE_ELIMINATION
+		if (a_ctrl->cam_act_state == CAM_ACTUATOR_ACQUIRE &&
+			a_ctrl->is_multi_user_supported == true) {
+			/*exile vibrator when camera want to take control of actuator*/
+			//mot_actuator_handle_exile();
+			mot_actuator_get(ACTUATOR_CLIENT_CAMERA);
+		}
+#endif
 
 		if (a_ctrl->cam_act_state == CAM_ACTUATOR_ACQUIRE) {
 			rc = cam_actuator_power_up(a_ctrl);
@@ -963,6 +1042,11 @@ int32_t cam_actuator_driver_cmd(struct cam_actuator_ctrl_t *a_ctrl,
 		}
 
 		if (a_ctrl->cam_act_state == CAM_ACTUATOR_CONFIG) {
+#ifdef CONFIG_AF_NOISE_ELIMINATION
+			if (a_ctrl->is_multi_user_supported == true) {
+				mot_actuator_put(ACTUATOR_CLIENT_CAMERA);
+			}
+#endif
 			rc = cam_actuator_power_down(a_ctrl);
 			if (rc < 0) {
 				CAM_ERR(CAM_ACTUATOR,

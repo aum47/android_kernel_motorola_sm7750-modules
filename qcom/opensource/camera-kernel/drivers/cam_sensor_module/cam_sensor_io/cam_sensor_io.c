@@ -9,6 +9,8 @@
 #include "cam_sensor_i3c.h"
 #include <linux/pm_runtime.h>
 
+struct camera_io_master *common_io_master_info = NULL;
+
 int32_t camera_io_dev_poll(struct camera_io_master *io_master_info,
 	uint32_t addr, uint16_t data, uint32_t data_mask,
 	enum camera_sensor_i2c_type addr_type,
@@ -219,6 +221,7 @@ int32_t camera_io_init(struct camera_io_master *io_master_info)
 		CAM_ERR(CAM_SENSOR_IO, "Invalid Args");
 		return -EINVAL;
 	}
+	common_io_master_info = io_master_info;
 
 	switch (io_master_info->master_type) {
 	case CCI_MASTER:

@@ -23,6 +23,39 @@ struct completion *cam_ois_get_i3c_completion(uint32_t index)
 	return &g_i3c_ois_data[index].probe_complete;
 }
 
+#ifdef CONFIG_MOT_DONGWOON_OIS_AF_DRIFT
+static struct cam_ois_ctrl_t * g_o_ctrl = NULL;
+
+int cam_ois_write_af_drift(uint32_t dac)
+{
+	struct cam_ois_ctrl_t *o_ctrl = g_o_ctrl;
+	struct cam_sensor_i2c_reg_setting i2c_reg_setting = {NULL, 1, CAMERA_SENSOR_I2C_TYPE_WORD, CAMERA_SENSOR_I2C_TYPE_WORD, 0};
+	struct cam_sensor_i2c_reg_array i2c_write_settings = {0x7070, dac, 0, 0};
+	int rc = 0;
+
+	if (!o_ctrl) {
+		CAM_ERR(CAM_OIS, "Invalid o_ctrl args");
+		return -EINVAL;
+	}
+
+	if (o_ctrl->cam_ois_state < CAM_OIS_CONFIG) {
+		CAM_WARN(CAM_OIS, "Not in right state to write af drift: %d", o_ctrl->cam_ois_state);
+		return -EINVAL;
+	}
+
+	i2c_reg_setting.reg_setting = &(i2c_write_settings);
+
+	rc = camera_io_dev_write(&(o_ctrl->io_master_info), &(i2c_reg_setting));
+	if (rc < 0) {
+		CAM_ERR(CAM_OIS, "Failed in applying i2c write settings");
+		return -EINVAL;
+	}
+
+	CAM_DBG(CAM_OIS,"Write af-drift success 0x%x", dac);
+	return rc;
+}
+#endif
+
 static int cam_ois_subdev_close_internal(struct v4l2_subdev *sd,
 	struct v4l2_subdev_fh *fh)
 {
@@ -425,7 +458,16 @@ static int cam_ois_component_bind(struct device *dev,
 	}
 	o_ctrl->soc_info.soc_private = soc_private;
 	soc_private->power_info.dev  = &pdev->dev;
+#ifdef CONFIG_MOT_OIS_AF_DRIFT
+	INIT_LIST_HEAD(&(o_ctrl->i2c_af_drift_data.list_head));
+#endif
+#ifdef CONFIG_MOT_OIS_AFTER_SALES_SERVICE
+	INIT_LIST_HEAD(&(o_ctrl->i2c_gyro_data.list_head));
+#endif
 	mutex_init(&(o_ctrl->ois_mutex));
+#ifdef CONFIG_MOT_OIS_EARLY_UPGRADE_FW
+	mutex_init(&(o_ctrl->ois_early_fw_mutex));
+#endif
 	rc = cam_ois_driver_soc_init(o_ctrl);
 	if (rc) {
 		CAM_ERR(CAM_OIS, "failed: soc init rc %d", rc);
@@ -453,6 +495,13 @@ static int cam_ois_component_bind(struct device *dev,
 	CAM_GET_TIMESTAMP(ts_end);
 	CAM_GET_TIMESTAMP_DIFF_IN_MICRO(ts_start, ts_end, microsec);
 	cam_record_bind_latency(pdev->name, microsec);
+
+#ifdef CONFIG_MOT_DONGWOON_OIS_AF_DRIFT
+	if (o_ctrl->af_drift_supported == true)
+	{
+		g_o_ctrl = o_ctrl;
+	}
+#endif
 
 	CAM_DBG(CAM_OIS, "Component bound successfully");
 	return rc;

@@ -42,6 +42,9 @@ struct camera_io_master {
 	struct cam_sensor_cci_client *cci_client;
 	struct cam_sensor_spi_client *spi_client;
 	char   sensor_name[CAM_SENSOR_NAME_MAX_SIZE];
+#ifdef CONFIG_MOT_SENSOR_STRICT_PERFRAMECONTROL
+	uint64_t sof_timestamp_jiffies;
+#endif
 };
 
 /**
