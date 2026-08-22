@@ -7,7 +7,6 @@ def _define_module(target, variant):
     tv = "{}_{}".format(target, variant)
     deps = [
         ":camera_headers",
-        ":camera_banner",
         "//vendor/qcom/kernel:all_headers",
     ]
 
@@ -260,7 +259,6 @@ def _define_module(target, variant):
                 True: ["drivers/cam_vmrm/qrtr/cam_qrtr_comms.c"],
             },
         },
-        copts = ["-include", "$(location :camera_banner)"],
         deps = deps,
         kconfig = "Kconfig",
         defconfig = "{}_defconfig_generated".format(tv),
