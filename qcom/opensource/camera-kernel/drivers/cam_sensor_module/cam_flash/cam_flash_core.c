@@ -1758,8 +1758,8 @@ int cam_flash_pmic_pkt_parser(struct cam_flash_ctrl *fctrl, void *arg)
 				flash_rer_info_u,
 				sizeof(struct cam_flash_set_rer));
 
-			if(rc) {
-				CAM_ERR(CAM_FLASH, "Alloc and copy flash operation info failed");
+			if (rc) {
+				CAM_ERR(CAM_FLASH, "Alloc and copy flash RER info failed");
 				break;
 			}
 
