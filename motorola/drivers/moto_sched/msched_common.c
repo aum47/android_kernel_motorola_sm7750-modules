@@ -15,6 +15,7 @@
 
 #include <linux/atomic.h>
 #include <linux/sched.h>
+#include <uapi/linux/sched/types.h>
 #include <linux/sched/task.h>
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
@@ -26,18 +27,33 @@
 #include <trace/hooks/sched.h>
 #include <trace/hooks/signal.h>
 #include <trace/hooks/binder.h>
-#include <kernel/sched/sched.h>
 #include <trace/hooks/dtask.h>
+#include <kernel/sched/sched.h>
+#include <linux/interrupt.h>
+
 #include "msched_common.h"
 #include "locking/locking_main.h"
+#include "locking/locking_trace.h"
 #define CREATE_TRACE_POINTS
+#include <trace/hooks/sys.h>
 #include "msched_trace.h"
 #include "msched_uclamp.h"
 #include <linux/percpu-defs.h>
 #include <linux/preempt.h>
+#include <uapi/linux/android/binder.h>
+#include <linux/mmap_lock.h>
+#include <linux/slab.h>
+#include <linux/kref.h>
+#include <linux/mm.h>
 
 #define MS_TO_NS (1000000)
 #define MAX_INHERIT_GRAN ((u64)(64 * MS_TO_NS))
+
+static const char * const kworker_trigger_reason_none = "none";
+static const char * const kworker_trigger_reason_rt_waker = "rt_waker_boost";
+static const char * const kworker_trigger_reason_ux_waker = "ux_waker_boost";
+static const char * const kworker_trigger_reason_launcher_waker = "launcher_waker_boost";
+static const char * const kworker_trigger_reason_top_waker = "top_waker_boost";
 
 static inline bool task_in_top_app_group(struct task_struct *p)
 {
@@ -47,6 +63,18 @@ static inline bool task_in_top_app_group(struct task_struct *p)
 #else
 	return get_task_cgroup_id(p) == CGROUP_TOP_APP;
 #endif
+}
+static inline bool need_boost_kernel_irq_thread(struct task_struct *p)
+{
+
+	return p && !p->mm && in_interrupt() && p->prio <= 120; /* Increase the priority of kworker threads woken up by IRQs (prio <= 120) to prevent stuttering. */
+}
+
+static inline bool is_ux_boost_kworker_candidate(struct task_struct *p)
+{
+	return p && !p->mm && p->prio == 100
+		&& strncmp(p->comm, "kworker/", 8) == 0
+		&& strncmp(p->comm, "kworker/u", 9) != 0;
 }
 
 static inline bool task_in_ux_related_group(struct task_struct *p)
@@ -65,7 +93,7 @@ static inline bool task_in_ux_related_group(struct task_struct *p)
 		return true;
 	}
 
-	if (is_enabled(UX_ENABLE_KERNEL) && (ux_type & UX_TYPE_KERNEL))
+	if (ux_type & UX_TYPE_SYSUI)
 		return true;
 
 	if (is_heavy_scene()) {
@@ -95,6 +123,14 @@ static inline bool task_in_ux_related_group(struct task_struct *p)
 		return true;
 
 	return false;
+}
+
+static inline int task_get_inherit_mvp_prio(struct task_struct *task)
+{
+	if (task_has_rt_policy(task))
+		return UX_PRIO_HIGHEST;
+
+	return task_get_mvp_prio(task, true);
 }
 
 void task_ux_type_set(int pid, int ux_type) {
@@ -168,13 +204,60 @@ void task_ux_type_clear(int pid, int ux_type) {
 	mutex_unlock(&ux_mutex);
 }
 
+static inline int calc_kworker_boost_prio(struct task_struct *p)
+{
+	int waker_prio = current->prio;
+	int prio = UX_PRIO_INVALID;
+	const char *trigger_reason = kworker_trigger_reason_none;
+	bool launcher_waker = current->pid == global_launcher_tgid;
+	bool ux_waker = task_get_ux_type(current) & UX_TYPE_ANIMATOR;
+	bool top_waker = task_in_top_app_group(current) && waker_prio <= 110;
+
+	if (task_has_rt_policy(current)) {
+#ifdef CONFIG_MOTO_BOOST_RT_KWORKER_HIGHEST
+		prio = UX_PRIO_HIGHEST;
+#else
+		prio = UX_PRIO_TOPAPP;
+#endif
+		trigger_reason = kworker_trigger_reason_rt_waker;
+	} else if (ux_waker) {
+		prio = UX_PRIO_ANIMATOR;
+		trigger_reason = kworker_trigger_reason_ux_waker;
+	} else if (launcher_waker) {
+		prio = UX_PRIO_TOPAPP;
+		trigger_reason = kworker_trigger_reason_launcher_waker;
+	} else if (top_waker) {
+		prio = UX_PRIO_TOPAPP;
+		trigger_reason = kworker_trigger_reason_top_waker;
+	}
+
+	if (prio != UX_PRIO_INVALID) {
+		trace_sched_boost_ux_kworker(p, waker_prio, trigger_reason);
+	}
+
+	return prio;
+}
+
 int task_get_mvp_prio(struct task_struct *p, bool with_inherit)
 {
 	int ux_type = task_get_ux_type(p);
 	int prio = UX_PRIO_INVALID;
 
 	if (p->prio < 100)
-		return UX_PRIO_INVALID;
+		return UX_PRIO_OTHER;			/* Allow RT threads to be treated as important UX tasks to enable binder priority inheritance*/
+
+	/* Based on the assumption that these kworkers awakened by IRQs have short lifecycles, boost to TOPAPP. Long-running tasks may lead to insufficient UI thread resources. */
+	if (is_enabled(UX_ENABLE_IRQWTH) && need_boost_kernel_irq_thread(p)) {
+		if(trace_sched_wake_by_irq_kth_enabled())
+			trace_sched_wake_by_irq_kth(p);
+		return UX_PRIO_TOPAPP;
+	}
+
+	if (is_enabled(UX_ENABLE_KWORKER) && is_ux_boost_kworker_candidate(p)) {
+		prio = calc_kworker_boost_prio(p);
+		if (prio != UX_PRIO_INVALID)
+			goto out;
+	}
 
 	// perf daemon
 	if (ux_type & UX_TYPE_PERF_DAEMON)
@@ -198,18 +281,28 @@ int task_get_mvp_prio(struct task_struct *p, bool with_inherit)
 	else if ((ux_type & (UX_TYPE_SYSTEM_LOCK|UX_TYPE_SERVICEMANAGER)) || (p->tgid == global_systemserver_tgid && p->prio == 105) )
 		prio = UX_PRIO_SYSTEM;
 	// inherit lock & binder
-	else if (with_inherit && (ux_type & (UX_TYPE_INHERIT_BINDER|UX_TYPE_INHERIT_LOCK)))
+	else if (with_inherit && (ux_type & (UX_TYPE_INHERIT_BINDER|UX_TYPE_INHERIT_LOCK))) {
+		struct moto_task_struct *mts = get_moto_task_struct(p);
+		if (!IS_ERR_OR_NULL(mts) && mts->inherit_prio >= UX_PRIO_OTHER)
+			prio = mts->inherit_prio;
+		else
+			prio = UX_PRIO_OTHER;
+	}
+	else if (is_enabled(UX_ENABLE_KERNEL) && (ux_type & UX_TYPE_KERNEL))
 		prio = UX_PRIO_OTHER;
 	// others high & others low but small tasks.
 	else if (task_in_ux_related_group(p) && (p->prio <= moto_boost_prio || moto_task_util(p) < moto_boost_task_util))
 		prio = UX_PRIO_OTHER;
 
+out:
 	cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
 		"pid=%d tgid=%d prio=%d scene=%d ux_type=%d task_util=%lu mvp_prio=%d\n",
 		p->pid, p->tgid, p->prio, moto_sched_scene, ux_type, moto_task_util(p), prio);
 
-        if (trace_msched_task_get_mvp_prio_enabled()) {
-	    trace_msched_task_get_mvp_prio(p, ux_type, prio, moto_task_util(p), moto_sched_scene);
+	if (trace_msched_task_get_mvp_prio_enabled()) {
+		trace_msched_task_get_mvp_prio(p, ux_type, current->pid,
+			task_get_ux_type(current), prio, moto_task_util(p),
+			moto_sched_scene);
 	}
 	return prio;
 }
@@ -235,7 +328,7 @@ static inline bool task_in_top_related_group(struct task_struct *p) {
 }
 
 static inline bool task_is_animator(struct task_struct *p) {
-	return task_has_ux_type(p, UX_TYPE_TOPAPP|UX_TYPE_LAUNCHER|UX_TYPE_TOPUI|UX_TYPE_ANIMATOR);
+        return task_has_ux_type(p, UX_TYPE_TOPAPP|UX_TYPE_LAUNCHER|UX_TYPE_TOPUI|UX_TYPE_ANIMATOR);
 }
 
 unsigned int task_get_mvp_limit(struct task_struct *p, int mvp_prio) {
@@ -260,39 +353,114 @@ unsigned int task_get_mvp_limit(struct task_struct *p, int mvp_prio) {
 EXPORT_SYMBOL(task_get_mvp_limit);
 
 void binder_inherit_ux_type(struct task_struct *task) {
-	if (is_enabled(UX_ENABLE_BINDER) && current_is_important_ux()) {
-		task_add_ux_type(task, UX_TYPE_INHERIT_BINDER);
+	if (is_enabled(UX_ENABLE_BINDER)
+			&& current_is_important_ux()) {
+		struct moto_task_struct *mts = get_moto_task_struct(task);
+		int current_prio = task_get_inherit_mvp_prio(current);
+		bool need_resched = false;
+
+		if (!IS_ERR_OR_NULL(mts) && mts->inherit_prio < current_prio) {
+			mts->inherit_prio = current_prio;
+			need_resched = true;
+		}
+
+		if (!task_has_ux_type(task, UX_TYPE_INHERIT_BINDER)) {
+			task_set_binder_inherit_prio(task, current_prio);
+			need_resched = true;
+			trace_binder_inherit_ux_type(task, task_get_ux_type(task), true);
+		}
+
+		if (need_resched)
+			resched_task(task, true);
 	}
 	msched_uclamp_binder_set_priority_hook(task);
 }
 EXPORT_SYMBOL(binder_inherit_ux_type);
 
+void binder_inherit_ux_type_from_client(struct task_struct *server_task, struct task_struct *client_task) {
+	if (is_enabled(UX_ENABLE_BINDER)
+			&& !task_has_ux_type(server_task, UX_TYPE_INHERIT_BINDER)
+			&& task_is_important_ux(client_task)) {
+		task_set_binder_inherit_prio(server_task, task_get_inherit_mvp_prio(client_task));
+		resched_task(server_task, true);
+		trace_binder_inherit_ux_type(server_task, task_get_ux_type(server_task), true);
+	}
+#ifdef CONFIG_MOTO_ENABLE_MDPF
+	msched_uclamp_binder_set_priority_hook(server_task);
+#endif
+}
+
+#if IS_ENABLED(CONFIG_SCHED_MOTO_BINDERTRANS)
+bool binder_inherit_rt_prio(struct binder_transaction *t, struct task_struct *task) {
+	#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+		if (is_enabled(UX_ENABLE_BINDER) && t->from && is_pid_important_rt(t->from_tid)) {
+	#else
+		if (is_enabled(UX_ENABLE_BINDER) && t->from && is_pid_important_rt(t->from->pid)) {
+	#endif
+			trace_binder_inherit_rt_check(task, t->priority.sched_policy, t->priority.prio, t->from->pid,\
+											t->from->task ? t->from->task->comm : "NULL", (unsigned long)t->to_thread);
+			if(!rt_policy(task->policy) && task->prio > t->priority.prio) {
+				struct sched_param params;
+				memset(&params, 0, sizeof(params));
+				params.sched_priority = MAX_RT_PRIO - 1 - t->priority.prio;
+				sched_setscheduler_nocheck(task,
+					   t->priority.sched_policy | SCHED_RESET_ON_FORK,
+					   &params);
+				if(trace_binder_inherit_rt_prio_enabled() && t->from->task)
+					trace_binder_inherit_rt_prio(task, t->from->task);
+
+				#ifdef CONFIG_MOTO_ENABLE_MDPF
+				msched_uclamp_binder_set_priority_hook(task);
+				#endif
+
+				return true;
+			}
+		}
+		return false;
+}
+void binder_inherit_boost(void *bndrtrans, struct task_struct *task) {
+	if (bndrtrans && !binder_inherit_rt_prio((struct binder_transaction *)bndrtrans, task)) {
+		if(likely(((struct binder_transaction *)bndrtrans)->from && ((struct binder_transaction *)bndrtrans)->from->task))
+			binder_inherit_ux_type_from_client(task, ((struct binder_transaction *)bndrtrans)->from->task);
+	}
+}
+EXPORT_SYMBOL(binder_inherit_boost);
+#endif
+
 void binder_clear_inherited_ux_type(struct task_struct *task) {
-	if (is_enabled(UX_ENABLE_BINDER)) {
-		task_clr_ux_type(task, UX_TYPE_INHERIT_BINDER);
+	if (is_enabled(UX_ENABLE_BINDER)
+			&& task_has_ux_type(task, UX_TYPE_INHERIT_BINDER)) {
+		task_clr_inherit_info(task, UX_TYPE_INHERIT_BINDER);
+
+		trace_binder_inherit_ux_type(task, task_get_ux_type(task), false);
 	}
 	msched_uclamp_binder_restore_priority_hook(task);
 }
 EXPORT_SYMBOL(binder_clear_inherited_ux_type);
 
 void queue_ux_task(struct rq *rq, struct task_struct *task, int enqueue) {
+	if (!task) {
+		return;
+	}
 	if (is_enabled(UX_ENABLE_LOCK) && !enqueue){
-		struct moto_task_struct *wts = get_moto_task_struct(task);
+		struct moto_task_struct *mts = get_moto_task_struct(task);
+		if (IS_ERR_OR_NULL(mts))
+			return;
 		if (task_has_ux_type(task, UX_TYPE_INHERIT_LOCK)) {
-			if (jiffies_to_nsecs(jiffies) - wts->inherit_start > MAX_INHERIT_GRAN) {
+			if (jiffies_to_nsecs(jiffies) - mts->inherit_start > MAX_INHERIT_GRAN) {
 				cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
 						"lock_clear_inherited_ux_type %s  %d  ux_type %d  cost=%llu\n", "dequeue task",
-						task->pid, wts->ux_type, (jiffies_to_nsecs(jiffies) - wts->inherit_start) / 1000000U);
-				task_clr_inherit_type(task);
+						task->pid, mts->ux_type, (jiffies_to_nsecs(jiffies) - mts->inherit_start) / 1000000U);
+				task_clr_inherit_info(task, UX_TYPE_INHERIT_LOCK);
 			}
 		}
 		if (task_has_ux_type(task, UX_TYPE_KERNEL)) {
-			if (jiffies_to_nsecs(jiffies) - wts->boost_kernel_start > MAX_INHERIT_GRAN) {
+			if (jiffies_to_nsecs(jiffies) - mts->boost_kernel_start > MAX_INHERIT_GRAN) {
 				cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
 						"lock_clear kernel boost %s  %d  ux_type %d  cost=%llu\n", "dequeue task",
-						task->pid, wts->ux_type, (jiffies_to_nsecs(jiffies) - wts->inherit_start) / 1000000U);
-				wts->boost_kernel_lock_depth = 0;
-				wts->boost_kernel_start = -1;
+						task->pid, mts->ux_type, (jiffies_to_nsecs(jiffies) - mts->inherit_start) / 1000000U);
+				mts->boost_kernel_lock_depth = 0;
+				mts->boost_kernel_start = -1;
 				task_clr_ux_type(task, UX_TYPE_KERNEL);
 			}
 		}
@@ -301,6 +469,9 @@ void queue_ux_task(struct rq *rq, struct task_struct *task, int enqueue) {
 EXPORT_SYMBOL(queue_ux_task);
 
 void binder_ux_type_set(struct task_struct *task) {
+	if (!task) {
+		return;
+	}
 	// Base feature: low latency binder
 	if (task && ((task_in_top_related_group(current) && task->group_leader->prio < MAX_RT_PRIO)
 					|| (current->group_leader->prio < MAX_RT_PRIO && task_in_top_related_group(task))
@@ -316,118 +487,7 @@ void binder_ux_type_set(struct task_struct *task) {
 }
 EXPORT_SYMBOL(binder_ux_type_set);
 
-bool lock_inherit_ux_type(struct task_struct *owner, struct task_struct *waiter, char* lock_name) {
-	struct moto_task_struct *owner_wts;
-	struct moto_task_struct *waiter_wts;
-	struct rq *rq = NULL;
-	struct rq_flags flags;
-
-	if (!owner || !waiter) {
-		cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
-			"lock_inherit_ux_type empty!! %d \n", 0);
-		return false;
-	}
-
-	if (task_get_ux_depth(waiter) >= UX_DEPTH_MAX) {
-		cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
-			"lock_inherit_ux_type max depth reached %d->%d\n",
-			waiter->pid, owner->pid);
-		return false;
-	}
-
-	rq = task_rq_lock(owner, &flags);
-
-	owner_wts = (struct moto_task_struct *) owner->android_oem_data1;
-	waiter_wts = (struct moto_task_struct *) waiter->android_oem_data1;
-
-	task_set_ux_inherit_prio(owner, task_get_ux_depth(waiter) + 1);
-
-	cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
-			"lock_inherit_ux_type %s %d -> %d   ux_type %d -> %d  depth=%d\n",
-			lock_name, waiter->pid, owner->pid, waiter_wts->ux_type, owner_wts->ux_type,
-			waiter_wts->inherit_depth);
-
-	task_rq_unlock(rq, owner, &flags);
-	return true;
-}
-
-bool lock_clear_inherited_ux_type(struct task_struct *owner, char* lock_name) {
-	struct moto_task_struct *owner_wts;
-	struct rq *rq = NULL;
-	struct rq_flags flags;
-
-	if (!owner) {
-		return false;
-	}
-	if (!task_has_ux_type(owner, UX_TYPE_INHERIT_LOCK)) {
-		return false;
-	}
-
-	rq = task_rq_lock(owner, &flags);
-
-	owner_wts = get_moto_task_struct(owner);
-	cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
-			"lock_clear_inherited_ux_type %s  %d  ux_type %d cost=%llu\n", lock_name,
-			owner->pid, owner_wts->ux_type,
-			(jiffies_to_nsecs(jiffies) - owner_wts->inherit_start) / 1000000U);
-	task_clr_inherit_type(owner);
-
-	task_rq_unlock(rq, owner, &flags);
-	return true;
-}
-
-void lock_protect_update_starttime(struct task_struct *tsk, unsigned long settime_jiffies, char* lock_name, void *pointer) {
-	struct moto_task_struct *waiter_wts = (struct moto_task_struct *) tsk->android_oem_data1;
-	if (unlikely(!locking_opt_enable()))
-		return;
-
-	if (unlikely(is_debuggable(DEBUG_LOCK))) {
-		if (settime_jiffies == 0) {
-			if (waiter_wts->boost_kernel_lock_depth == 0) {
-				printk(KERN_ERR "LOCK_PERF(%s)kernel boost mismatch(%d)!!", lock_name, waiter_wts->boost_kernel_lock_depth);
-			}
-			if (task_has_ux_type(tsk,UX_TYPE_KERNEL)) {
-				u64 sleep = (jiffies_to_nsecs(jiffies) - waiter_wts->boost_kernel_start) / 1000000U;
-				if (sleep > 40) {
-					cond_trace_printk(true,
-							"(%s) too long prio=%d locked=%d cost=%llu\n", lock_name, tsk->prio, waiter_wts->boost_kernel_lock_depth, sleep);
-				}
-				if (sleep > 100) {
-					printk(KERN_ERR "LOCK_PERF (%s) running too long prio=%d locked=%d cost=%llu", lock_name, tsk->prio, waiter_wts->boost_kernel_lock_depth, sleep);
-				}
-				if (sleep > 500) {
-					dump_stack();
-				}
-			} else {
-				printk(KERN_ERR "LOCK_PERF rwsem didn't boost!!!");
-			}
-		} else {
-			if (waiter_wts->boost_kernel_lock_depth > 32) {
-				cond_trace_printk(true,
-					"(%s)kernel boost mismatch(%d)!!", lock_name, waiter_wts->boost_kernel_lock_depth);
-			}
-		}
-	}
-
-	if (settime_jiffies > 0) {
-		if (waiter_wts->boost_kernel_lock_depth == 0) {
-			task_add_ux_type(tsk, UX_TYPE_KERNEL);
-			waiter_wts->boost_kernel_start = jiffies_to_nsecs(jiffies);
-		}
-		waiter_wts->boost_kernel_lock_depth++;
-	} else {
-		waiter_wts->boost_kernel_lock_depth--;
-		if (waiter_wts->boost_kernel_lock_depth < 0) {
-			cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
-					"(%s)kernel boost mismatch(%d)!!", lock_name, waiter_wts->boost_kernel_lock_depth);
-			waiter_wts->boost_kernel_lock_depth = 0;
-		}
-		if (waiter_wts->boost_kernel_lock_depth == 0) {
-			task_clr_ux_type(tsk, UX_TYPE_KERNEL);
-		}
-	}
-}
-
+#ifndef CONFIG_MOTO_LOCKING_2
 // don't dup ux_type for UX_TYPE_SERVICEMANAGER as init was labeled.
 #define UX_TYPE_TO_DUP (UX_TYPE_AUDIOSERVICE|UX_TYPE_NATIVESERVICE|UX_TYPE_CAMERASERVICE|UX_TYPE_ANIMATOR)
 static void android_vh_dup_task_struct(void *unused, struct task_struct *task, struct task_struct *orig)
@@ -441,6 +501,209 @@ static void android_vh_dup_task_struct(void *unused, struct task_struct *task, s
 
 	}
 	msched_uclamp_vh_dup_task_struct(unused, task, orig);
+}
+#endif
+
+static void
+ux_changed_fair(struct rq *rq, struct task_struct *p, bool is_added_uxtype)
+{
+	if (!task_on_rq_queued(p))
+		return;
+
+	if (rq->cfs.nr_running == 1)
+		return;
+
+	if (task_current(rq, p)) {
+		if (!is_added_uxtype)
+			resched_curr(rq);
+	} else
+		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0))
+		wakeup_preempt(rq, p, 0);
+		#else
+		check_preempt_curr(rq, p, 0);
+		#endif
+}
+
+/**
+ * resched_task - Re-schedule a task after UX type change
+ * @p: The task to reschedule
+ * @is_added_uxtype: true if UX type is being added (boosted), false if being removed
+ *
+ * Usage:
+ *   - Call with is_added_uxtype=true when adding UX type (e.g., task_add_ux_type)
+ *   - Call with is_added_uxtype=false when clearing UX type (e.g., task_clr_ux_type)
+ */
+bool resched_task(struct task_struct *p, bool is_added_uxtype) {
+	struct rq *rq;
+	struct rq_flags rf;
+	bool queued = false;
+	bool running = false;
+
+	if (unlikely(!p))
+		return false;
+
+	if (fair_policy(p->policy)) {
+		get_task_struct(p);
+
+		rq = task_rq_lock(p, &rf);
+		update_rq_clock(rq);
+
+		queued = task_on_rq_queued(p);
+		running = task_current(rq, p);
+
+		if (queued)
+			deactivate_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
+		if (running)
+			put_prev_task(rq, p);
+
+		if (queued)
+			activate_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+		if (running)
+			set_next_task(rq, p);
+
+		ux_changed_fair(rq, p, is_added_uxtype);
+
+		task_rq_unlock(rq, p, &rf);
+		put_task_struct(p);
+	}
+
+	return true;
+}
+
+bool lock_inherit_ux_type(struct task_struct *owner, struct task_struct *waiter, char* lock_name) {
+	struct rq *rq = NULL;
+	struct rq_flags flags;
+
+	if (!owner || !waiter) {
+		/* UPDATED: Replaced cond_trace_printk with the new generic trace event */
+		trace_locking_debug_trace(NULL, __func__, "empty_owner_or_waiter", 0, 0);
+		return false;
+	}
+
+	if (rt_policy(owner->policy))
+		return false;
+
+	if (task_get_ux_depth(waiter) >= UX_DEPTH_MAX) {
+		/* UPDATED: Replaced cond_trace_printk */
+		trace_locking_debug_trace(NULL, __func__, "max_depth_reached", waiter->pid, owner->pid);
+		return false;
+	}
+
+	/* ADDED: Trace event for lock inheritance start */
+	trace_lock_pi_start(owner, waiter, lock_name);
+
+	rq = task_rq_lock(owner, &flags);
+
+	task_set_lock_inherit_prio(owner, task_get_ux_depth(waiter) + 1,
+				   task_get_inherit_mvp_prio(waiter));
+	/*
+	 * UPDATED: Replaced the main debug printk with the trace event.
+	 * We log the waiter's and owner's original ux_type for context.
+	 */
+	// trace_locking_debug_trace(NULL, __func__, lock_name,
+	//	waiter_wts->ux_type, owner_wts->ux_type);
+	task_rq_unlock(rq, owner, &flags);
+
+	return resched_task(owner, true);
+}
+
+bool lock_clear_inherited_ux_type(struct task_struct *owner, char* lock_name) {
+	struct moto_task_struct *owner_mts;
+	struct rq *rq = NULL;
+	struct rq_flags flags;
+
+	if (!owner) {
+		return false;
+	}
+
+	if (rt_policy(owner->policy))
+		return false;
+
+	owner_mts = get_moto_task_struct(owner);
+	if (IS_ERR_OR_NULL(owner_mts))
+		return false;
+
+	if (!task_has_ux_type(owner, UX_TYPE_INHERIT_LOCK)) {
+		return false;
+	}
+
+	/* ADDED: Trace event for lock inheritance clear */
+	trace_lock_pi_finish(owner, lock_name);
+
+	rq = task_rq_lock(owner, &flags);
+	cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
+			"lock_clear_inherited_ux_type %s  %d  ux_type %d cost=%llu\n", lock_name,
+			owner->pid, owner_mts->ux_type,
+			(jiffies_to_nsecs(jiffies) - owner_mts->inherit_start) / 1000000U);
+	task_clr_inherit_info(owner, UX_TYPE_INHERIT_LOCK);
+
+	task_rq_unlock(rq, owner, &flags);
+
+	return resched_task(owner, false);
+}
+
+void lock_protect_update_starttime(struct task_struct *tsk, unsigned long settime_jiffies, char* lock_name, void *pointer) {
+	struct moto_task_struct *waiter_mts = get_moto_task_struct(tsk);
+	bool acquire = (bool)!!settime_jiffies;
+
+	if (unlikely(!locking_opt_enable()) || IS_ERR_OR_NULL(waiter_mts) || !tsk)
+		return;
+
+	if (unlikely(is_debuggable(DEBUG_LOCK))) {
+		if (settime_jiffies == 0) {
+			if (waiter_mts->boost_kernel_lock_depth == 0) {
+				printk(KERN_ERR "LOCK_PERF(%s)kernel boost mismatch(%d)!!", lock_name, waiter_mts->boost_kernel_lock_depth);
+			}
+			if (task_has_ux_type(tsk,UX_TYPE_KERNEL)) {
+				u64 sleep = (jiffies_to_nsecs(jiffies) - waiter_mts->boost_kernel_start) / 1000000U;
+				if (sleep > 40) {
+					cond_trace_printk(true,
+							"(%s) too long prio=%d locked=%d cost=%llu\n", lock_name, tsk->prio, waiter_mts->boost_kernel_lock_depth, sleep);
+				}
+				if (sleep > 100) {
+					printk(KERN_ERR "LOCK_PERF (%s) running too long prio=%d locked=%d cost=%llu", lock_name, tsk->prio, waiter_mts->boost_kernel_lock_depth, sleep);
+				}
+				if (sleep > 500) {
+					dump_stack();
+				}
+			} else {
+				printk(KERN_ERR "LOCK_PERF rwsem didn't boost!!!");
+			}
+		} else {
+			if (waiter_mts->boost_kernel_lock_depth > 32) {
+				cond_trace_printk(true,
+					"(%s)kernel boost mismatch(%d)!!", lock_name, waiter_mts->boost_kernel_lock_depth);
+			}
+		}
+	}
+
+	if (acquire) {
+		if (waiter_mts->boost_kernel_lock_depth == 0) {
+			task_add_ux_type(tsk, UX_TYPE_KERNEL);
+			waiter_mts->boost_kernel_start = jiffies_to_nsecs(jiffies);
+			resched_task(tsk, true);
+		}
+		waiter_mts->boost_kernel_lock_depth++;
+		trace_sched_percpu_rwsem_starttime(tsk, waiter_mts->boost_kernel_lock_depth, acquire, task_get_ux_type(tsk), task_get_mvp_prio(tsk, true));
+	} else {
+		if (waiter_mts->boost_kernel_lock_depth == 0) {
+			cond_trace_printk(unlikely(is_debuggable(DEBUG_BASE)),
+					"(%s)kernel boost mismatch(%d)!!", lock_name, waiter_mts->boost_kernel_lock_depth);
+		} else {
+			waiter_mts->boost_kernel_lock_depth--;
+			if(trace_sched_percpu_rwsem_hold_time_enabled()) {
+				u64 lock_hold_time_ms = (jiffies_to_nsecs(jiffies) - waiter_mts->boost_kernel_start) / 1000000U;
+				trace_sched_percpu_rwsem_hold_time(tsk, lock_hold_time_ms);
+			}
+
+			if (waiter_mts->boost_kernel_lock_depth == 0) {
+				task_clr_ux_type(tsk, UX_TYPE_KERNEL);
+				trace_sched_percpu_rwsem_starttime(tsk, waiter_mts->boost_kernel_lock_depth, acquire, task_get_ux_type(tsk), task_get_mvp_prio(tsk, true));
+				resched_task(tsk, false);
+			}
+		}
+	}
+
 }
 
 #if (LINUX_VERSION_CODE == KERNEL_VERSION(5, 10, 0))
@@ -456,15 +719,251 @@ static void probe_android_vh_binder_priority_skip(void *ignore, struct task_stru
 }
 #endif
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+static bool binder_is_transaction_complete(struct binder_work *w)
+{
+	if (!w)
+		return false;
+
+	return w->type == BINDER_WORK_TRANSACTION_COMPLETE ||
+			w->type == BINDER_WORK_TRANSACTION_ONEWAY_SPAM_SUSPECT;
+}
+
+static int binder_count_effective_works(struct list_head *todo)
+{
+	struct binder_work *w;
+	int count = 0;
+	list_for_each_entry(w, todo, entry) {
+		if (!binder_is_transaction_complete(w))
+			count++;
+	}
+	return count;
+}
+
+static bool binderthread_is_almost_idle(struct binder_thread *thread)
+{
+	if (thread->transaction_stack != NULL)
+		return false;
+
+	if (list_empty(&thread->todo))
+		return true;
+
+	if (list_is_singular(&thread->todo)) {
+		struct binder_work *w = list_first_entry(&thread->todo, struct binder_work, entry);
+		if (binder_is_transaction_complete(w))
+			return true;
+	}
+
+	return false;
+}
+
+static struct binder_thread *pick_best_binderthread(struct binder_proc *proc)
+{
+	struct binder_thread *best = NULL;
+	struct rb_node *n;
+	int best_score = INT_MAX;
+	bool found_idle = false;
+	int mvp_prio = UX_PRIO_INVALID;
+
+	if(!proc)
+		return NULL;
+
+	for (n = rb_first(&proc->threads); n; n = rb_next(n)) {
+		struct binder_thread *thread = rb_entry(n, struct binder_thread, rb_node);
+		int score = 0;
+
+		if (!thread || thread->is_dead || !thread->task || !(thread->looper & 0x01)) /*BINDER_LOOPER_STATE_REGISTERED*/
+			continue;
+
+		mvp_prio = task_get_mvp_prio(thread->task, true);
+		if(thread->task->prio < MAX_RT_PRIO || mvp_prio > UX_PRIO_INVALID)
+			continue;
+
+		if (binderthread_is_almost_idle(thread)) {
+			best = thread;
+			found_idle = true;
+			break;
+		}
+
+		if (thread->transaction_stack == NULL) {
+			score += 0;
+		} else {
+			int depth = 0;
+			struct binder_transaction *t = thread->transaction_stack;
+			while (t) {
+				depth++;
+				t = t->from_parent;
+			}
+			score += depth * 100;
+		}
+
+		score += binder_count_effective_works(&thread->todo) * 10;
+
+		if (score < best_score) {
+			best_score = score;
+			best = thread;
+		}
+	}
+
+	trace_binder_pick_best_thread(proc->pid, best ? best->task : NULL, mvp_prio, found_idle, best_score);
+
+	return best;
+}
+
+static bool proc_has_epoll_threads(struct binder_proc *proc) {
+	struct rb_node *n;
+	for (n = rb_first(&proc->threads); n; n = rb_next(n)) {
+		struct binder_thread *thread = rb_entry(n, struct binder_thread, rb_node);
+		if (thread->looper & 0x20) /* BINDER_LOOPER_STATE_POLL */
+			return true;
+	}
+	return false;
+}
+
 static void android_vh_binder_proc_transaction_finish(void *unused, struct binder_proc *proc,
 		struct binder_transaction *t, struct task_struct *task, bool pending_async, bool sync)
 {
-	if (current == task)
+	struct task_struct *cli_task = t->from ? t->from->task : NULL;
+
+	if (current == task || !proc)
 		return;
 
 	if (!pending_async && task) {
 		binder_ux_type_set(task);
+	} else if (sync && !task && cli_task && task_is_important_ux(cli_task) && is_enabled(UX_ENABLE_BEST_BTHD)) {
+		if(trace_binder_nothread_be_select_enabled())
+			trace_binder_nothread_be_select(current, proc->pid, proc_has_epoll_threads(proc));
+
+		struct binder_thread *best = pick_best_binderthread(proc);
+
+		if (best && best->task) {
+			binder_inherit_ux_type(best->task);
+		}
+	}
+}
+#endif
+
+#define per_cpu_sum(var)                                                \
+({                                                                      \
+	typeof(var) __sum = 0;                                          \
+	int cpu;                                                        \
+	compiletime_assert_atomic_type(__sum);                          \
+	for_each_possible_cpu(cpu)                                      \
+		__sum += per_cpu(var, cpu);                             \
+	__sum;                                                          \
+})
+
+static bool percpu_is_writer_waiting_locked(struct percpu_rw_semaphore *sem)
+{
+	return per_cpu_sum(*sem->read_count) != 0 && atomic_read(&sem->block);
+}
+
+static void android_vh_percpu_rwsem_down_read_preempt_handler(
+		void *unused,
+		struct percpu_rw_semaphore *sem,
+		bool try,
+		bool *ret)
+{
+	if (unlikely(!sem || !ret))
+		return;
+
+	if (!is_enabled(UX_ENABLE_PERCPU_RWSEM)) {
+		trace_percpu_rwsem_down_read_preempt(sem, try, *ret);
+		return;
+	}
+
+	if (!atomic_read(&sem->block)) {
+		return;
+	}
+
+	if (!percpu_is_writer_waiting_locked(sem)) {
+		return;
+	}
+
+	if (current->tgid == global_launcher_tgid &&
+		task_get_mvp_prio(current, true) == UX_PRIO_TOPAPP &&
+		strcmp(current->comm, "RenderThread") == 0)
+		goto allow;
+
+	if (strncmp(current->comm, "binder", 6) == 0) {
+		struct task_struct *t;
+
+		rcu_read_lock();
+		t = find_task_by_vpid(current->tgid);
+		if (t && task_has_rt_policy(t)) {
+			rcu_read_unlock();
+			goto allow;
+		}
+		rcu_read_unlock();
+	}
+	return;
+
+allow:
+	preempt_disable();
+	this_cpu_inc(*sem->read_count);
+	smp_mb();
+	*ret = true;
+	preempt_enable();
+	trace_percpu_rwsem_down_read_preempt(sem, try, *ret);
+}
+
+static void android_rvh_percpu_rwsem_wait_complete_handler(
+		void *unused,
+		struct percpu_rw_semaphore *sem,
+		long state,
+		bool *complete)
+{
+	if (unlikely(!sem || !complete))
+		return;
+
+	trace_percpu_rwsem_wait_complete(sem, state, *complete);
+}
+
+static void android_vh_percpu_rwsem_up_write_handler(
+		void *unused,
+		struct percpu_rw_semaphore *sem)
+{
+	trace_percpu_rwsem_up_write(sem);
+}
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+static void msched_anon_vma_name_free(struct kref *kref)
+{
+	struct anon_vma_name *anon_name =
+			container_of(kref, struct anon_vma_name, kref);
+	kfree(anon_name);
+}
+
+static inline void msched_anon_vma_name_put(struct anon_vma_name *anon_name)
+{
+	if (anon_name)
+		kref_put(&anon_name->kref, msched_anon_vma_name_free);
+}
+
+static void android_rvh_pr_set_vma_name_bypass(void *unused, struct mm_struct *mm,
+		unsigned long addr, unsigned long size,
+		struct anon_vma_name *anon_name, int *error, bool *bypass)
+{
+	struct task_struct *p = current;
+	int trylock_res;
+
+	if (unlikely(!mm || !error || !bypass))
+		return;
+
+	if (task_get_mvp_prio(p, true) == UX_PRIO_TOPAPP ||
+			p->tgid == global_sysui_tgid ||
+			p->tgid == global_sf_tgid) {
+		// very low overhead (atomic cmpxchg).
+		// If fails, thread likely enters D state.
+		trylock_res = down_write_trylock(&mm->mmap_lock);
+		if (trylock_res) {
+			mmap_write_unlock(mm);
+		} else {
+			*bypass = true;
+			*error = 0;
+			trace_msched_pr_set_vma_name_bypass(p, addr, size);
+			msched_anon_vma_name_put(anon_name);
+		}
 	}
 }
 #endif
@@ -555,11 +1054,14 @@ static void android_vh_percpu_rwsem_up_write_handler(
 
 void register_vendor_comm_hooks(void)
 {
+#ifndef CONFIG_MOTO_LOCKING_2
 	register_trace_android_vh_dup_task_struct(android_vh_dup_task_struct, NULL);
+#endif
+
 #if (LINUX_VERSION_CODE == KERNEL_VERSION(5, 10, 0))
 	register_trace_android_vh_binder_priority_skip(probe_android_vh_binder_priority_skip, NULL);
 #endif
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
 	register_trace_android_vh_binder_proc_transaction_finish(
 		android_vh_binder_proc_transaction_finish, NULL);
 #endif
@@ -571,4 +1073,8 @@ void register_vendor_comm_hooks(void)
 		android_vh_percpu_rwsem_up_write_handler, NULL);
 
 	msched_uclamp_register_vendor_comm_hooks();
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+	register_trace_android_rvh_pr_set_vma_name_bypass(
+		android_rvh_pr_set_vma_name_bypass, NULL);
+#endif
 }

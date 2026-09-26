@@ -77,7 +77,11 @@ enum {
 static struct msched_ops sched_ops = {
 	.task_get_mvp_prio	= task_get_mvp_prio,
 	.task_get_mvp_limit	= task_get_mvp_limit,
+	#if IS_ENABLED(CONFIG_SCHED_MOTO_BINDERTRANS)
+	.binder_inherit_ux_type = binder_inherit_boost,
+	#else
 	.binder_inherit_ux_type = binder_inherit_ux_type,
+	#endif
 	.binder_clear_inherited_ux_type = binder_clear_inherited_ux_type,
 	.binder_ux_type_set = binder_ux_type_set,
 	.queue_ux_task = queue_ux_task
@@ -86,7 +90,11 @@ static struct msched_ops sched_ops = {
 static struct msched_ops sched_ops = {
 	.task_get_mvp_prio	= task_get_mvp_prio,
 	.task_get_mvp_limit	= task_get_mvp_limit,
+	#if IS_ENABLED(CONFIG_SCHED_MOTO_BINDERTRANS)
+	.binder_inherit_ux_type = binder_inherit_boost,
+	#else
 	.binder_inherit_ux_type = binder_inherit_ux_type,
+	#endif
 	.binder_clear_inherited_ux_type = binder_clear_inherited_ux_type,
 	.binder_ux_type_set = binder_ux_type_set,
 	.queue_ux_task = queue_ux_task
@@ -128,10 +136,10 @@ static ssize_t proc_enabled_write(struct file *file, const char __user *buf,
 static ssize_t proc_enabled_read(struct file *file, char __user *buf,
 		size_t count, loff_t *ppos)
 {
-	char buffer[128];
+	char buffer[256];
 	size_t len = 0;
 
-	len = snprintf(buffer, sizeof(buffer), "0x%x base=%d interaction=%d lock=%d binder=%d audio=%d camera=%d kswapd=%d boost=%d kernel=%d mdpf=%d percpu_rwsem=%d\n",
+	len = snprintf(buffer, sizeof(buffer), "0x%x base=%d interaction=%d lock=%d binder=%d audio=%d camera=%d kswapd=%d boost=%d kernel=%d mdpf=%d kworker=%d irqwth=%d percpu_rwsem=%d bset_binder=%d\n",
 			moto_sched_enabled,
 			is_enabled(UX_ENABLE_BASE),
 			is_enabled(UX_ENABLE_INTERACTION),
@@ -143,7 +151,11 @@ static ssize_t proc_enabled_read(struct file *file, char __user *buf,
 			is_enabled(UX_ENABLE_BOOST),
 			is_enabled(UX_ENABLE_KERNEL),
 			is_enabled(UX_ENABLE_MDPF),
-			is_enabled(UX_ENABLE_PERCPU_RWSEM));
+			is_enabled(UX_ENABLE_KWORKER),
+			is_enabled(UX_ENABLE_IRQWTH),
+			is_enabled(UX_ENABLE_PERCPU_RWSEM),
+			is_enabled(UX_ENABLE_BEST_BTHD)
+		);
 
 	return simple_read_from_buffer(buf, count, ppos, buffer, len);
 }
@@ -444,7 +456,8 @@ static ssize_t all_ux_tasks_read(struct file *file, char __user *buf,
         for_each_thread(p, t) {
 			ux_type = task_get_ux_type(t);
 			if (ux_type > 0) {
-				pr_info("%d:%d %s prio=%d ux_type=0x%x\n", t->tgid, t->pid, t->comm, t->prio, ux_type);
+				pr_info("%d:%d %s prio=%d ux_type=0x%x  parent=%d \n", t->tgid, t->pid, t->comm,
+				t->prio, ux_type, t->parent->pid);
 				ux_count++;
 			}
         }
