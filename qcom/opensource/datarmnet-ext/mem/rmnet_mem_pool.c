@@ -1,58 +1,118 @@
-/* Copyright (c) 2023-2025 Qualcomm Innovation Center, Inc. All rights reserved.
- * SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include "rmnet_mem_nl.h"
 #include "rmnet_mem_priv.h"
-#define DATARMNETc8aadbe769 (0xdf7+6169-0x241c)
-#define DATARMNET831d60a2b1 (0xd18+223-0xdf4)
-#define DATARMNETa967925c7a (0xdb7+6677-0x263c)
-#define DATARMNET19337c1bbf (0xdb7+6670-0x2634)
-extern struct delayed_work pool_adjust_work;extern struct workqueue_struct*
-mem_wq;int DATARMNET291f036d31(struct sk_buff*skb,struct genl_info*
-DATARMNET54338da2ff){u8 mode=(0xd2d+202-0xdf7);struct DATARMNET5d6175c98d 
-mem_info;struct nlattr*na;if(DATARMNET54338da2ff->attrs[DATARMNETe5184c7a76]){na
-=DATARMNET54338da2ff->attrs[DATARMNETe5184c7a76];if(nla_memcpy(&mem_info,na,
-sizeof(mem_info))>(0xd2d+202-0xdf7)){rm_err("%s(): modeinfo %u\n",__func__,
-mem_info.DATARMNET3a4d9ad400);}rm_err(
-"\x25\x73\x28\x29\x3a\x20\x6d\x6f\x64\x65\x20\x25\x75" "\n",__func__,mode);
-DATARMNETe85d734d4f(DATARMNETa967925c7a,DATARMNET54338da2ff);}else{
-DATARMNETe85d734d4f(DATARMNET19337c1bbf,DATARMNET54338da2ff);}return
-(0xd2d+202-0xdf7);}int DATARMNET8e48a951e4(struct sk_buff*skb,struct genl_info*
-DATARMNET54338da2ff){struct DATARMNET5d23779a8f mem_info;struct nlattr*na;int i;
-unsigned long DATARMNET28085cfd14;u8 DATARMNET205e85dea0=(0xd2d+202-0xdf7);u8 
-DATARMNET4f9cb7ce34=(0xd2d+202-0xdf7);DATARMNETa293261aea[DATARMNET95fc2e84cc]++
-;if(DATARMNET54338da2ff->attrs[DATARMNETb0428b7575]){na=DATARMNET54338da2ff->
-attrs[DATARMNETb0428b7575];if(nla_memcpy(&mem_info,na,sizeof(mem_info))>
-(0xd2d+202-0xdf7)){rm_err(
-"\x25\x73\x28\x29\x3a\x20\x6d\x6f\x64\x65\x69\x6e\x66\x6f\x20\x25\x75" "\n",
-__func__,mem_info.DATARMNET855b934a37);}for(i=(0xd2d+202-0xdf7);i<POOL_LEN;i++){
-if(mem_info.DATARMNET855b934a37&(0xd26+209-0xdf6)<<i&&mem_info.
-DATARMNETe87b937bb6[i]>(0xd2d+202-0xdf7)&&mem_info.DATARMNETe87b937bb6[i]<=
-MAX_STATIC_POOL){DATARMNET15e53a8338[i]=mem_info.DATARMNETe87b937bb6[i];
-max_pool_size[i]=mem_info.DATARMNETe87b937bb6[i];DATARMNET205e85dea0=
-(0xd26+209-0xdf6);if(!DATARMNET4f9cb7ce34&&mem_info.DATARMNETe87b937bb6[i]>
-static_pool_size[i]){DATARMNET4f9cb7ce34=(0xd26+209-0xdf6);}}}rm_err(
-"\x20\x70\x6f\x6f\x6c\x73\x69\x7a\x65\x20\x25\x64\x20\x25\x64" "\n",mem_info.
-DATARMNETe87b937bb6[(0xd1f+216-0xdf5)],mem_info.DATARMNETe87b937bb6[
-(0xd18+223-0xdf4)]);if(DATARMNET205e85dea0&&mem_wq){DATARMNET28085cfd14=
-msecs_to_jiffies(DATARMNET675090896c);cancel_delayed_work_sync(&pool_adjust_work
-);queue_delayed_work(mem_wq,&pool_adjust_work,(DATARMNET4f9cb7ce34)?
-(0xd2d+202-0xdf7):DATARMNET28085cfd14);}DATARMNETe85d734d4f(DATARMNETa967925c7a,
-DATARMNET54338da2ff);}else{DATARMNETe85d734d4f(DATARMNET19337c1bbf,
-DATARMNET54338da2ff);}return(0xd2d+202-0xdf7);}int DATARMNET803d42739e(struct 
-sk_buff*skb,struct genl_info*DATARMNET54338da2ff){struct DATARMNET5d23779a8f 
-mem_info;struct nlattr*na;int i;DATARMNETa293261aea[DATARMNETe581523c0b]++;if(
-DATARMNET54338da2ff->attrs[DATARMNETb0428b7575]){na=DATARMNET54338da2ff->attrs[
-DATARMNETb0428b7575];if(nla_memcpy(&mem_info,na,sizeof(mem_info))>
-(0xd2d+202-0xdf7)){rm_err(
-"\x25\x73\x28\x29\x3a\x20\x6d\x6f\x64\x65\x69\x6e\x66\x6f\x20\x25\x75" "\n",
-__func__,mem_info.DATARMNET855b934a37);}rm_err(
-"\x25\x73\x28\x29\x3a\x20\x70\x62\x69\x6e\x64\x20\x70\x6f\x6f\x6c\x5f\x73\x69\x7a\x65\x20\x25\x75" "\n"
-,__func__,mem_info.DATARMNETe87b937bb6[(0xd18+223-0xdf4)]);for(i=
-(0xd2d+202-0xdf7);i<POOL_LEN;i++){if(mem_info.DATARMNET855b934a37&
-(0xd26+209-0xdf6)<<i){if(mem_info.DATARMNETe87b937bb6[i]>(0xd2d+202-0xdf7)&&
-mem_info.DATARMNETe87b937bb6[i]<=MAX_STATIC_POOL)DATARMNETf85ebffa7a[i]=mem_info
-.DATARMNETe87b937bb6[i];}}DATARMNETe85d734d4f(DATARMNETa967925c7a,
-DATARMNET54338da2ff);}else{DATARMNETe85d734d4f(DATARMNET19337c1bbf,
-DATARMNET54338da2ff);}return(0xd2d+202-0xdf7);}
+
+#define MAX_POOL 500
+#define DEF_PAGEO 3
+
+#define RMNET_MEM_NL_SUCCESS 400
+#define RMNET_MEM_NL_FAIL 401
+
+extern struct delayed_work pool_adjust_work;
+extern struct workqueue_struct *mem_wq;
+
+
+int rmnet_mem_nl_cmd_update_mode(struct sk_buff *skb, struct genl_info *info)
+{
+	u8 mode = 0;
+	struct rmnet_memzone_req mem_info;
+	struct nlattr *na;
+
+	if (info->attrs[RMNET_MEM_ATTR_MODE]) {
+		na = info->attrs[RMNET_MEM_ATTR_MODE];
+		if (nla_memcpy(&mem_info, na, sizeof(mem_info)) > 0) {
+			rm_err("%s(): modeinfo %u\n", __func__, mem_info.zone);
+		}
+		rm_err("%s(): mode %u\n", __func__, mode);
+
+		rmnet_mem_genl_send_int_to_userspace_no_info(RMNET_MEM_NL_SUCCESS, info);
+	} else {
+		rmnet_mem_genl_send_int_to_userspace_no_info(RMNET_MEM_NL_FAIL, info);
+	}
+	return 0;
+}
+
+int rmnet_mem_nl_cmd_update_pool_size(struct sk_buff *skb, struct genl_info *info)
+{
+	struct rmnet_pool_update_req mem_info;
+	struct nlattr *na;
+	int i;
+	unsigned long jiffies;
+	u8 update_flag = 0;
+	u8 increase = 0;
+
+	rmnet_mem_stats[RMNET_MEM_POOL_NL]++;
+
+	if (info->attrs[RMNET_MEM_ATTR_POOL_SIZE]) {
+		na = info->attrs[RMNET_MEM_ATTR_POOL_SIZE];
+		if (nla_memcpy(&mem_info, na, sizeof(mem_info)) > 0) {
+			rm_err("%s(): modeinfo %u\n", __func__, mem_info.valid_mask);
+		}
+
+		for (i = 0; i < POOL_LEN; i++) {
+			if (mem_info.valid_mask & 1 << i &&
+			    mem_info.poolsize[i] > 0 &&
+			    mem_info.poolsize[i] <= MAX_STATIC_POOL) {
+				/* Sets next adjust work trigger to alloc new target memory.
+				 * Updates grow cap for new pages we alloc.
+				 */
+				target_pool_size[i] = mem_info.poolsize[i];
+				max_pool_size[i] = mem_info.poolsize[i];
+				update_flag = 1;
+				/* If greater mem demands grab mem immediately */
+				if (!increase && mem_info.poolsize[i] > static_pool_size[i]) {
+					increase = 1;
+				}
+			}
+		}
+		rm_err(" poolsize %d %d\n", mem_info.poolsize[2], mem_info.poolsize[3]);
+
+		if (update_flag && mem_wq) {
+			jiffies = msecs_to_jiffies(RAMP_DOWN_DELAY);
+			cancel_delayed_work_sync(&pool_adjust_work);
+			queue_delayed_work(mem_wq, &pool_adjust_work, (increase)? 0: jiffies);
+		}
+
+		rmnet_mem_genl_send_int_to_userspace_no_info(RMNET_MEM_NL_SUCCESS, info);
+	} else {
+		rmnet_mem_genl_send_int_to_userspace_no_info(RMNET_MEM_NL_FAIL, info);
+	}
+
+	return 0;
+}
+
+/* Update peak Mem pool size for Pb Ind usage */
+int rmnet_mem_nl_cmd_peak_pool_size(struct sk_buff *skb, struct genl_info *info)
+{
+	struct rmnet_pool_update_req mem_info;
+	struct nlattr *na;
+	int i;
+
+	rmnet_mem_stats[RMNET_MEM_PEAK_POOL_NL]++;
+
+	if (info->attrs[RMNET_MEM_ATTR_POOL_SIZE]) {
+		na = info->attrs[RMNET_MEM_ATTR_POOL_SIZE];
+		if (nla_memcpy(&mem_info, na, sizeof(mem_info)) > 0) {
+			rm_err("%s(): modeinfo %u\n", __func__, mem_info.valid_mask);
+		}
+
+		rm_err("%s(): pbind pool_size %u\n", __func__, mem_info.poolsize[3]);
+
+		for (i = 0; i < POOL_LEN; i++) {
+			if (mem_info.valid_mask & 1 << i) {
+				if (mem_info.poolsize[i] > 0 && mem_info.poolsize[i] <= MAX_STATIC_POOL)
+					rmnet_mem_pb_ind_max[i] = mem_info.poolsize[i];
+			}
+		}
+
+		rmnet_mem_genl_send_int_to_userspace_no_info(RMNET_MEM_NL_SUCCESS, info);
+	} else {
+		rmnet_mem_genl_send_int_to_userspace_no_info(RMNET_MEM_NL_FAIL, info);
+	}
+
+	return 0;
+}

@@ -5,6 +5,12 @@ def define_mem(target, variant):
     kernel_build_variant = "{}_{}".format(target, variant)
     include_base = "../../../../../{}".format(native.package_name())
 
+    target_copts = []
+
+    # Enable C define only for selected target
+    if target == "parrot":
+        target_copts.append("-DRMNET_LOWMEM_TARGET")
+
     ddk_module(
         name = "{}_rmnet_mem".format(kernel_build_variant),
         out = "rmnet_mem.ko",
@@ -21,7 +27,7 @@ def define_mem(target, variant):
         deps = [
             "//vendor/qcom/kernel:all_headers",
         ],
-        copts = ["-Wno-misleading-indentation"],
+        copts = ["-Wno-misleading-indentation"] + target_copts,
     )
 
     copy_to_dist_dir(

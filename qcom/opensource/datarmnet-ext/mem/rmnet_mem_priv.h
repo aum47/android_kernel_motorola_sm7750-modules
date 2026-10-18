@@ -1,38 +1,72 @@
-/* Copyright (c) 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
- * SPDX-License-Identifier: GPL-2.0-only
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
-#ifndef DATARMNET64d33b9eb9
-#define DATARMNET64d33b9eb9
+#ifndef _RMNET_MEM_PRIV_H_
+#define _RMNET_MEM_PRIV_H_
+
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
 #include <linux/module.h>
 #include <linux/mm.h>
-#define IPA_ID (0xd26+209-0xdf6)
-#define RMNET_CORE_ID (0xd1f+216-0xdf5)
-#define POOL_LEN (0xd11+230-0xdf3)
-#define MAX_STATIC_POOL (0xc07+1233-0xe1c)
-#define MAX_POOL_O3 (0xbb7+1296-0xe24)
-#define MAX_POOL_O2 (0xbb7+4453-0x1c3c)
-#define DATARMNETeb73899668 (0x385+2882-0xc6f)
-#define DATARMNETe4e4a9ca82 (0xc07+4803-0x1e0c)
-#define DATARMNET675090896c (0x16f8+4804-0x1e04)
-#define DATARMNETc8ec566153 (0xec7+711-0x1125)
-#define DATARMNET3657d13d98(DATARMNET9cf7d31274,DATARMNET5444bd3b6f)    ((\
-DATARMNET9cf7d31274) > (DATARMNET5444bd3b6f) ? (DATARMNET9cf7d31274) : (\
-DATARMNET5444bd3b6f))
-enum{RMNET_MEM_PB_IND,DATARMNETc8e634191a,DATARMNET95fc2e84cc,
-DATARMNETe581523c0b,DATARMNET55412eb785,DATARMNETbc3b36ce41,};enum{
-DATARMNETbcd0fd349d,DATARMNET0b84d87330,DATARMNETf03ba54970,DATARMNETe433597216,
-DATARMNETfdc300cd1f,};void rmnet_mem_adjust(unsigned perm_size,u8 order);
-#define rm_err(DATARMNET6c3cf5865b, ...)  \
-	do { if ((0xd2d+202-0xdf7)) pr_err(DATARMNET6c3cf5865b, __VA_ARGS__); } while (\
-(0xd2d+202-0xdf7))
-extern int max_pool_size[POOL_LEN];extern int static_pool_size[POOL_LEN];extern 
-int pool_unbound_feature[POOL_LEN];extern int rmnet_mem_order_requests[POOL_LEN]
-;extern int rmnet_mem_id_req[POOL_LEN];extern int rmnet_mem_id_recycled[POOL_LEN
-];extern unsigned int DATARMNET15e53a8338[POOL_LEN];extern unsigned int 
-DATARMNETf85ebffa7a[POOL_LEN];extern int DATARMNETa293261aea[DATARMNETbc3b36ce41
-];
-#endif
 
+#define IPA_ID 1
+#define RMNET_CORE_ID 2
+
+#define POOL_LEN 4
+
+#ifdef RMNET_LOWMEM_TARGET
+#define MAX_STATIC_POOL 1000
+#else
+#define MAX_STATIC_POOL 700
+#endif
+#define MAX_POOL_O3 675
+#define MAX_POOL_O2 224
+
+#define MID_POOL_O3 600
+#define MID_POOL_O2 190
+
+#define VT_MAX_POOL_O3 150
+#define VT_MAX_POOL_O2 800
+
+#define VT_MID_POOL_O3 100
+#define VT_MID_POOL_O2 675
+
+#define RAMP_DOWN_DELAY 3000
+#define PB_IND_DUR 105
+#define MAX_VOTE(a,b)    ((a) > (b) ? (a) : (b))
+
+enum {
+	RMNET_MEM_PB_IND,
+	RMNET_MEM_PB_TIMEOUT,
+	RMNET_MEM_POOL_NL,
+	RMNET_MEM_PEAK_POOL_NL,
+	RMNET_MEM_PB_IND_CONFIG_FAIL,
+	RMNET_MEM_STAT_MAX,
+};
+
+enum {
+	ERR_MALLOC_FAIL1,
+	ERR_GET_ORDER_ERR,
+	ERR_INV_ARGS,
+	ERR_TIMEOUT,
+	ERR_MAX,
+};
+
+void rmnet_mem_adjust(unsigned perm_size, u8 order);
+
+#define rm_err(fmt, ...)  \
+	do { if (0) pr_err(fmt, __VA_ARGS__); } while (0)
+
+extern int max_pool_size[POOL_LEN];
+extern int static_pool_size[POOL_LEN];
+extern int pool_unbound_feature[POOL_LEN];
+extern int rmnet_mem_order_requests[POOL_LEN];
+extern int rmnet_mem_id_req[POOL_LEN];
+extern int rmnet_mem_id_recycled[POOL_LEN];
+extern unsigned int target_pool_size[POOL_LEN];
+extern unsigned int rmnet_mem_pb_ind_max[POOL_LEN];
+extern int rmnet_mem_stats[RMNET_MEM_STAT_MAX];
+
+#endif
