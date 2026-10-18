@@ -13,6 +13,18 @@
 #include "synx_err.h"
 #include "synx_extension_api.h"
 
+#define SYNX_MAJOR_VERSION 2
+#define SYNX_MINOR_VERSION 2
+#define SYNX_PATCH_VERSION 0
+
+#define SYNX_VERSION(major, minor, patch)	\
+	(((((u32)(major)) & 0xFU) << 28) |		\
+	 ((((u32)(minor)) & 0xFFFU) << 16) |	\
+	 (((u32)(patch)) & 0xFFFFU))
+
+#define SYNX_API_VERSION \
+	SYNX_VERSION(SYNX_MAJOR_VERSION, SYNX_MINOR_VERSION, SYNX_PATCH_VERSION)
+
 #define SYNX_NO_TIMEOUT        ((u64)-1)
 
 /**
@@ -23,6 +35,12 @@
 #define SYNX_HW_FENCE_CLIENT_START 1024
 #define SYNX_HW_FENCE_CLIENT_END 4096
 #define SYNX_MAX_SIGNAL_PER_CLIENT 64
+
+/**
+ * SYNX_NO_SECURITY_KEY     : No security key is associated with Synx obj
+ */
+#define SYNX_NO_SECURITY_KEY 0
+
 /* synx object states */
 #define SYNX_STATE_INVALID             0    // Invalid synx object
 #define SYNX_STATE_ACTIVE              1    // Synx object has not been signaled
@@ -495,21 +513,72 @@ struct synx_merge_params {
 };
 
 /**
+ * SYNX_MERGE_INDV_PARAMS    : Merge filled with synx_merge_params struct.
+ */
+enum synx_merge_type {
+	SYNX_MERGE_INDV_PARAMS = 0x01,
+};
+
+/**
+ * struct synx_merge_indv_params - Synx merge indv parameters
+ *
+ * @h_synxs          : Pointer to a array of synx handles to be merged.
+ * @flags            : Merge flags.
+ * @num_objs         : Number of synx handles to be merged.
+ * @h_merged_obj     : Pointer to synx object handle passed by client.
+ *                     Created merged synx handle filled by function.
+ * @client_data_hi   : most significant 32 bits of the 64-bit client_data propagated
+ *                     to waiting client during signal. Only supported for fence creation.
+ * @client_data_lo   : least significant 32 bits of the 64-bit client_data propagated
+ *                     to waiting client during signal. Only supported for fence creation.
+ * @security_key_hi  : most significant 32 bits of the 64-bit security_key for authentication.
+ *                     If security_key is not required use SYNX_NO_SECURITY_KEY macro.
+ * @security_key_lo  : least significant 32 bits of the 64-bit security_key for authentication.
+ *                     If security_key is not required use SYNX_NO_SECURITY_KEY macro.
+ */
+struct synx_merge_indv_params {
+	u32 *h_synxs;
+	enum synx_merge_flags flags;
+	u32 num_objs;
+	u32 *h_merged_obj;
+	u32 client_data_hi;
+	u32 client_data_lo;
+	u32 security_key_hi;
+	u32 security_key_lo;
+};
+
+/**
+ * struct synx_merge_n_params - Synx merge parameters
+ *
+ * @type         : Merge params type
+ * @indv         : params to create a single merged handle
+ */
+struct synx_merge_n_params {
+	enum synx_merge_type type;
+	union {
+		struct synx_merge_indv_params indv;
+	};
+};
+
+/**
  * enum synx_import_type - Import type
  *
  * SYNX_IMPORT_INDV_PARAMS : Import/Create  filled with synx_import_indv_params struct
  * SYNX_IMPORT_ARR_PARAMS  : Import/Create  filled with synx_import_arr_params struct
  * SYNX_IMPORT_INDV_PARAMS_V2 : Import filled with synx_import_indv_params_v2 struct
  *                              (NOT SUPPORTED)
+ * SYNX_IMPORT_ARR_PARAMS_V2  : Import/Create  filled with synx_import_arr_params_v2 struct
+ *                              (NOT SUPPORTED)
  */
 enum synx_import_type {
 	SYNX_IMPORT_INDV_PARAMS = 0x01,
 	SYNX_IMPORT_ARR_PARAMS  = 0x02,
 	SYNX_IMPORT_INDV_PARAMS_V2 = 0x03,
+	SYNX_IMPORT_ARR_PARAMS_V2 = 0x04,
 };
 
 /**
- * struct synx_import_indv_params - Synx import indv V2 parameters
+ * struct synx_import_indv_params - Synx import indv parameters
  *
  * @new_h_synxs : Pointer to new synx object
  *                (filled by the function)
@@ -526,23 +595,43 @@ struct synx_import_indv_params {
 };
 
 /**
- * struct synx_import_indv_params_v2 - Synx import indv parameters
+ * struct synx_import_indv_params_v2 - Synx import indv v2 parameters
  *
- * @new_h_synx : Pointer to new synx object
- *                (filled by the function)
- *                The new handle/s should be used by importing
- *                process for all synx api operations and
- *                for sharing with FW cores.
- * @flags       : Synx import flags
- * @fence       : Pointer to DMA fence fd or synx handle, NULL if creating fence
- * @client_data : 64-bit client data propagated to waiting clients during signal,
- *                only supported for fence creation
+ * @new_h_synx       : Pointer to new synx object
+ *                      (filled by the function)
+ *                      The new handle should be used by importing
+ *                      process for all synx api operations and
+ *                      for sharing with FW cores.
+ * @flags            : Synx import flags
+ * @fence            : Pointer to DMA fence fd or synx handle, NULL if creating fence
+ * @client_data_hi   : most significant 32 bits of the 64-bit client_data propagated
+ *                     to waiting client during signal. Only supported for fence creation.
+ * @client_data_lo   : least significant 32 bits of the 64-bit client_data propagated
+ *                     to waiting client during signal. Only supported for fence creation.
+ * @security_key_hi  : most significant 32 bits of the 64-bit security_key for authentication.
+ *                     If security_key is not required use SYNX_NO_SECURITY_KEY macro.
+ * @security_key_lo  : least significant 32 bits of the 64-bit security_key for authentication.
+ *                     If security_key is not required use SYNX_NO_SECURITY_KEY macro.
  */
 struct synx_import_indv_params_v2 {
 	u32 *new_h_synx;
 	enum synx_import_flags flags;
 	void *fence;
-	u64 client_data;
+	u32 client_data_hi;
+	u32 client_data_lo;
+	u32 security_key_hi;
+	u32 security_key_lo;
+};
+
+/**
+ * struct synx_import_arr_params_v2 - Synx import arr v2 parameters
+ *
+ * @list        : List of synx_import_indv_params_v2 params
+ * @num_fences  : Number of fences or synx handles to be imported/created
+ */
+struct synx_import_arr_params_v2 {
+	struct synx_import_indv_params_v2 *list;
+	u32 num_fences;
 };
 
 /**
@@ -559,9 +648,11 @@ struct synx_import_arr_params {
 /**
  * struct synx_import_params - Synx import parameters
  *
- * @type : Import/Create params type filled by client
- * @indv : Params to import/create an individual handle or fence
- * @arr  : Params to import/create an array of handles or fences
+ * @type    : Import/Create params type filled by client
+ * @indv    : Params to import/create an individual handle or fence
+ * @arr     : Params to import/create an array of handles or fences
+ * @indv_v2 : Params to import/create an individual handle or fence of v2 params
+ * @arr_v2  : Params to import/create an array of handles or fences of v2 params
  */
 struct synx_import_params {
 	enum synx_import_type type;
@@ -569,6 +660,7 @@ struct synx_import_params {
 		struct synx_import_indv_params indv;
 		struct synx_import_arr_params  arr;
 		struct synx_import_indv_params_v2 indv_v2;
+		struct synx_import_arr_params_v2 arr_v2;
 	};
 };
 
@@ -765,6 +857,7 @@ struct synx_get_params {
  * @release             : releases synx object
  * @get                 : gets information associated with synx object
  * @release_n           : releases an array of synx objects
+ * @merge_n             : merges multiple synx objects with merge_n params
  */
 struct synx_ops {
 	int (*uninitialize)(struct synx_session *session);
@@ -782,6 +875,7 @@ struct synx_ops {
 	int (*release)(struct synx_session *session, u32 h_synx);
 	int (*get)(struct synx_session *session, struct synx_get_params *params);
 	int (*release_n)(struct synx_session *session, struct synx_release_n_params *params);
+	int (*merge_n)(struct synx_session *session, struct synx_merge_n_params *params);
 };
 
 /* Kernel APIs */
@@ -912,6 +1006,18 @@ int synx_signal_n(struct synx_session *session, struct synx_signal_n_params *par
  * @return Status of operation. Negative in case of error. SYNX_SUCCESS otherwise.
  */
 int synx_merge(struct synx_session *session, struct synx_merge_params *params);
+
+/**
+ * synx_merge_n - Merges multiple synx objects with synx_merge_n params (NOT SUPPORTED)
+ *
+ * This function will merge multiple synx objects into a synx group based on synx_merge_type.
+ *
+ * @param session : Session ptr (returned from synx_initialize)
+ * @param params  : Merge_n params
+ *
+ * @return Status of operation. Negative in case of error. SYNX_SUCCESS otherwise.
+ */
+int synx_merge_n(struct synx_session *session, struct synx_merge_n_params *params);
 
 /**
  * synx_wait - Waits for a synx object synchronously
