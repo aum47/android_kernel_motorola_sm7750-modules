@@ -22,6 +22,8 @@ void kgsl_reclaim_close(void);
 int kgsl_reclaim_to_pinned_state(struct kgsl_process_private *priv);
 void kgsl_reclaim_proc_sysfs_init(struct kgsl_process_private *process);
 void kgsl_reclaim_proc_private_init(struct kgsl_process_private *process);
+ssize_t reclaim_all_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count);
 ssize_t kgsl_proc_max_reclaim_limit_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count);
 ssize_t kgsl_proc_max_reclaim_limit_show(struct device *dev,

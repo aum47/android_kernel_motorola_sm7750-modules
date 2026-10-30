@@ -10,6 +10,7 @@
 #include <linux/kobject.h>
 #include <linux/kthread.h>
 #include <linux/llist.h>
+#include <linux/rtmutex.h>
 
 extern unsigned int adreno_drawobj_timeout;
 
@@ -67,7 +68,9 @@ struct adreno_dispatch_job {
  * @idle_gate: Gate to wait on for dispatcher to idle
  */
 struct adreno_dispatcher {
-	struct mutex mutex;
+	// BEGIN Motorola, chentao8, 18/08/2025, IKSWW-34321
+	struct rt_mutex mutex;
+	// END IKSWW-34321
 	unsigned long priv;
 	struct timer_list timer;
 	struct timer_list fault_timer;

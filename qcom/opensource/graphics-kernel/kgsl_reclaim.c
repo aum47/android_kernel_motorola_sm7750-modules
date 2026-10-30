@@ -31,6 +31,26 @@ struct work_struct reclaim_work;
 
 static atomic_t kgsl_nr_to_reclaim;
 
+ssize_t reclaim_all_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	u32 val;
+	int ret;
+
+	ret = kstrtou32(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (!val)
+		return count;
+
+	/* Convert MB to pages */
+	atomic_set(&kgsl_nr_to_reclaim, (val << 20) >> PAGE_SHIFT);
+	kgsl_schedule_work(&reclaim_work);
+
+	return count;
+}
+
 #if (KERNEL_VERSION(6, 2, 0) <= LINUX_VERSION_CODE)
 static void kgsl_memdesc_clear_unevictable(struct kgsl_process_private *process,
 		struct kgsl_memdesc *memdesc)
