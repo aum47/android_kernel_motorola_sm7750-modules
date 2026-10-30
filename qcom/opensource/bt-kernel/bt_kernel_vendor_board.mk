@@ -4,7 +4,7 @@ ifeq ($(TARGET_USES_QMAA),true)
   ifeq ($(TARGET_USES_QMAA_OVERRIDE_BLUETOOTH), true)
      ifeq ($(call is-board-platform-in-list,$(TARGET_BOARD_PLATFORM)),true)
            BT_KERNEL_DRIVER := $(KERNEL_MODULES_OUT)/btpower.ko
-           BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/radio-i2c-rtc6226-qca.ko
+           #BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/radio-i2c-rtc6226-qca.ko
            ifeq ($(TARGET_BOARD_PLATFORM), sun)
            BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/btfmcodec.ko
            BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/btfm_slim_codec.ko
@@ -18,7 +18,7 @@ ifeq ($(TARGET_USES_QMAA),true)
 else
   ifeq ($(call is-board-platform-in-list,$(TARGET_BOARD_PLATFORM)),true)
      BT_KERNEL_DRIVER := $(KERNEL_MODULES_OUT)/btpower.ko
-     BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/radio-i2c-rtc6226-qca.ko
+     #BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/radio-i2c-rtc6226-qca.ko
      ifeq ($(TARGET_BOARD_PLATFORM), sun)
      BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/btfmcodec.ko
      BT_KERNEL_DRIVER += $(KERNEL_MODULES_OUT)/btfm_slim_codec.ko

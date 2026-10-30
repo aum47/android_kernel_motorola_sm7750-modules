@@ -15,7 +15,7 @@ LOCAL_PATH := $(call my-dir)
 ifeq ($(call is-board-platform-in-list, taro kalama pineapple blair sun parrot), true)
 
 BT_SELECT := CONFIG_MSM_BT_POWER=m
-BT_SELECT += CONFIG_I2C_RTC6226_QCA=m
+#BT_SELECT += CONFIG_I2C_RTC6226_QCA=m
 
 ifneq ($(call is-board-platform-in-list, parrot), true)
 BT_SELECT += CONFIG_FMD_ENABLE=y
