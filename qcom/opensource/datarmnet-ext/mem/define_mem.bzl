@@ -3,13 +3,7 @@ load("//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
 def define_mem(target, variant):
     kernel_build_variant = "{}_{}".format(target, variant)
-    include_base = "../../../../../{}".format(native.package_name())
-
-    target_copts = []
-
-    # Enable C define only for selected target
-    if target == "parrot":
-        target_copts.append("-DRMNET_LOWMEM_TARGET")
+    include_base = "../../../{}".format(native.package_name())
 
     ddk_module(
         name = "{}_rmnet_mem".format(kernel_build_variant),
@@ -23,11 +17,11 @@ def define_mem(target, variant):
             "rmnet_mem_pool.c",
             "rmnet_mem_priv.h",
         ],
-        kernel_build = "//vendor/qcom/kernel:{}".format(kernel_build_variant),
+        kernel_build = "//msm-kernel:{}".format(kernel_build_variant),
         deps = [
-            "//vendor/qcom/kernel:all_headers",
+            "//msm-kernel:all_headers",
         ],
-        copts = ["-Wno-misleading-indentation"] + target_copts,
+        copts = ["-Wno-misleading-indentation"],
     )
 
     copy_to_dist_dir(
