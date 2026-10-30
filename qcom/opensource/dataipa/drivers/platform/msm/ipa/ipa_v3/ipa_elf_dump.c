@@ -41,7 +41,11 @@ bool ipa_minidump_enabled(void)
 	int ret = true;
 
 	IPADBG("Checking if minidump enabled\n");
-	if (!dump_enabled()) {
+	/*If modem panic occurs, ipa_driver.elf logs cannot be generated due to selinux permission
+	problem, and then modem dump cannot be generated; so modify the following, only modem
+	dump is generated, but ipa_driver.elf is not generated;*/
+	//if (!dump_enabled())
+	if (1) {
 		IPADBG("Dump not enabled\n");
 		return false;
 	}
